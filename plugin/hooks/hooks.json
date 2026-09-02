@@ -1,12 +1,12 @@
 {
-  "description": "agent-tunes — start background music while the agent works, stop when it settles. All logic lives in ~/agent-tunes/bin/agent-tunes; these hooks only signal work start/stop.",
+  "description": "agent-tunes: start music while the agent works, stop when it settles. The behaviour lives in ~/.agent-tunes/bin/agent-tunes, which install.sh links to your clone. These hooks only report when work starts and stops.",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/agent-tunes/bin/agent-tunes\" start",
+            "command": "\"$HOME/.agent-tunes/bin/agent-tunes\" start",
             "timeout": 5
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/agent-tunes/bin/agent-tunes\" start",
+            "command": "\"$HOME/.agent-tunes/bin/agent-tunes\" start",
             "timeout": 5
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/agent-tunes/bin/agent-tunes\" stop",
+            "command": "\"$HOME/.agent-tunes/bin/agent-tunes\" stop",
             "timeout": 5
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/agent-tunes/bin/agent-tunes\" stop",
+            "command": "\"$HOME/.agent-tunes/bin/agent-tunes\" stop",
             "timeout": 5
           }
         ]

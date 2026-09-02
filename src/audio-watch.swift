@@ -1,24 +1,23 @@
-// audio-watch — is any process other than ours playing audio?
+// audio-watch: is any process other than ours playing audio?
 //
 // Uses CoreAudio's process-object API (macOS 14.4+): every audio client is an
-// AudioObject with a PID and an "is running output" flag. The answer is exact —
-// an app merely holding an audio session open (Slack, Teams, an idle Safari
-// tab) reports false; only actual output counts.
+// AudioObject with a PID and an "is running output" flag, so the answer is
+// exact. An app merely holding an audio session open (Slack, Teams, an idle
+// Safari tab) reports false. Only actual output counts.
 //
-// It polls. CoreAudio does publish change notifications for both the process
-// list and the running-output flag, and an earlier version of this file used
-// them, but measured on macOS 25.6 they arrive roughly 33 seconds after the
-// event — for a newly spawned process and for an already-registered one alike.
-// That is useless for "get out of the way now", so the listeners were dropped
-// in favour of a poll. One long-lived process doing ~60 local property reads
-// twice a second costs about a millisecond a tick; see `--bench`.
+// It polls, deliberately. CoreAudio also publishes change notifications for
+// the process list and the running-output flag, but on macOS 25.6 those arrive
+// roughly 33 seconds after the event, for a newly spawned process and for an
+// already-registered one alike. That is no use when the job is to get out of
+// the way now. One long-lived process doing about 60 local property reads twice
+// a second costs roughly a millisecond a tick; measure it with `--bench`.
 //
 // Usage:  audio-watch [--once] [--interval <seconds>] [--bench] <pid-to-ignore>...
 //   default   block until another process starts output
 //   --once    check once and exit, without waiting
 //
 // Exit codes:
-//   0  another process is playing — prints "BUSY <pid>"
+//   0  another process is playing, and its pid is printed as "BUSY <pid>"
 //   1  nothing else is playing (--once only)
 //   3  the OS does not support the process-object API
 //   4  the first ignored pid exited, so there is nothing left to guard
@@ -112,7 +111,7 @@ while true {
     if let g = guarded, kill(g, 0) != 0 { exit(4) }  // our player has gone
     if let p = offender(in: objects) { print("BUSY \(p)"); exit(0) }
     // A new client means a new object, so refresh the list periodically rather
-    // than on every tick — the list read is the expensive half of a scan.
+    // than on every tick. The list read is the expensive half of a scan.
     sinceRefresh += 1
     if sinceRefresh >= 4 {
         objects = processObjects()

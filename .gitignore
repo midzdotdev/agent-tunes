@@ -1,4 +1,4 @@
-# Tracks. Large binaries with their own licensing — fetch your own with
+# Tracks. Large binaries with their own licensing. Fetch your own with
 # `agent-tunes download <url>`.
 audio/
 
@@ -9,3 +9,6 @@ state/
 libexec/audio-watch
 
 .DS_Store
+
+# Your local settings. Copy config.example.env and edit.
+config.env

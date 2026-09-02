@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-tunes — background music while a coding agent is working.
+# agent-tunes: background music while a coding agent is working.
 #
 # One implementation, two front-ends: a Claude Code plugin (hooks.json) and an
 # omp extension (omp/agent-tunes.ts). Both shell out to this script, so the
@@ -83,7 +83,7 @@ player_alive() {
 # processes are actually running output. It is exact: an app merely holding an
 # audio session open (Slack, Teams, a Safari tab) reports false.
 #
-# The fallback reads macOS power assertions — coreaudiod holds one
+# The fallback reads macOS power assertions. coreaudiod holds one
 # PreventUserIdleSystemSleep assertion per playing audio context. Note grep -c,
 # not grep -q: under `set -o pipefail` a short-circuiting grep kills pmset with
 # SIGPIPE and the pipeline reports failure, which would read as "idle".
@@ -123,7 +123,7 @@ resolve_key() {
   printf 'k-default'
 }
 
-# Stop playing. With fade unless $1 is "now" — yielding to another app has to be
+# Stop playing. Fades out unless $1 is "now". Yielding to another app has to be
 # immediate, since the point is to get out of its way.
 kill_player() {
   local mode="${1:-fade}" p faded=0
@@ -304,7 +304,7 @@ cmd_doctor() {
 
 usage() {
   cat <<'EOF'
-agent-tunes — background music while a coding agent works
+agent-tunes: background music while a coding agent works
 
   agent-tunes on|off|toggle      enable / disable (this is the switch)
   agent-tunes status             what is enabled, what is playing

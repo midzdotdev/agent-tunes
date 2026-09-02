@@ -1,185 +1,157 @@
-# agent-tunes
+<div align="center">
 
-Background music while a coding agent works. One implementation, two front-ends:
-a **Claude Code plugin** and an **omp extension**. Both are thin shims that shell
-out to `bin/agent-tunes`, so the behaviour lives in exactly one place.
+# 🎧 agent-tunes
 
-## The switch
+**Music while your coding agent works. Silence when it doesn't.**
+
+[![macOS](https://img.shields.io/badge/macOS-14.4%2B-black?logo=apple)](https://www.apple.com/macos/)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](https://claude.com/claude-code)
+[![omp](https://img.shields.io/badge/omp-extension-6366f1)](https://omp.sh)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+</div>
+
+Your agent starts working, music fades in from a random point in the track. It
+finishes, the music fades out. Someone rings you on Teams, the music stops
+instantly and gets out of the way.
+
+It plays only when nothing else on your Mac is making a sound, so it never talks
+over a call, a video, or whatever you already had on.
+
+Works with [Claude Code](https://claude.com/claude-code) and
+[omp](https://omp.sh), together or separately.
+
+## Install
 
 ```bash
-agent-tunes on          # or: off, toggle
+git clone https://github.com/midzdotdev/agent-tunes.git
+cd agent-tunes
+./install.sh
+```
+
+The installer checks for what it needs, offers to fetch anything missing through
+Homebrew, compiles a small helper, and registers itself with whichever agents you
+have. Run it again whenever you like; it skips whatever is already done.
+
+Then give it something to play:
+
+```bash
+agent-tunes download "https://www.youtube.com/watch?v=..."
+```
+
+That accepts anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) understands,
+which is most audio and video sites plus plain file links. You can also drop a
+file straight into `audio/`. Use music you have the right to play.
+
+Restart Claude Code so it picks up the hooks, and you're done.
+
+## Turning it off
+
+```bash
+agent-tunes toggle      # or: on, off
 agent-tunes status
 ```
 
-`agent-tunes` is on `PATH` via `~/.local/bin/agent-tunes`. Inside omp there is
-also `/tunes on|off|toggle|status`, and inside Claude Code `/tunes`.
+Both agents also have a `/tunes` command that takes the same words.
 
-## What it does
+Nothing is left running when it's off. The switch is a file in `state/`, checked
+before anything else happens.
 
-On every turn, the agent's hooks call `agent-tunes start`. That does **not** play
-anything immediately — it marks the session as working and schedules a check
-`TUNES_START_DELAY` seconds later. At that point audio starts only if all of:
+## When it plays
 
-1. `agent-tunes` is enabled,
-2. a session is still working,
-3. nothing of ours is already playing,
-4. **nothing else on the machine is playing audio.**
+Four things have to be true, or it stays quiet:
 
-The start delay means a short turn finishes before any sound is made — no
-two-second blips of jazz for a one-line answer.
+1. you have it switched on
+2. an agent is actually working
+3. it isn't already playing
+4. nothing else on the Mac is playing audio
 
-Playback starts at a **random position** in the track (never within
-`TUNES_MIN_TAIL` seconds of the end), fades in over `TUNES_FADE_IN`, and fades
-out over `TUNES_FADE_OUT` when the last active agent session finishes.
+There's also a four second delay before the first note. A quick answer finishes
+before any sound arrives, so short turns don't produce a two second blip of jazz.
 
-## Multiple agents
+Playback begins somewhere random in the track, never in the last five minutes of
+it, and fades in. When the agent settles, it fades out.
 
-Concurrent agents are reference-counted. `start` registers a session by touching
-`state/active/k-<session>`; `stop` removes that one file and only stops the music
-if the directory is then empty. So:
+### Getting out of the way
 
-```
-A starts  -> registers, music starts
-B starts  -> registers, music continues
-A stops   -> deregisters, music continues (B is still working)
-B stops   -> deregisters, directory empty, music fades out
-```
+While music is playing, agent-tunes watches for anyone else starting audio. The
+moment someone does, it stops, with no fade, because the point is to leave you
+the speakers.
 
-A directory of one file per agent rather than a single shared list, because
-create and remove are then atomic — no read-modify-write, so two agents starting
-or stopping at the same instant cannot lose each other's entry.
+It knows the difference between an app that is playing and an app that merely has
+audio open. Slack, Teams and an idle Safari all sit there holding audio sessions
+without making a sound, and none of them count.
 
-The session key comes from the `session_id` in the JSON that Claude Code pipes to
-its hooks, and from `--key omp-<pid>` for omp. `agent-tunes status` lists who is
-currently registered. Nested omp subagents share a process, so the extension
-reference-counts them in memory and only signals `stop` when the outermost one
-finishes.
+## Several agents at once
 
-Deliberately, the launcher decides what to do from the registered set *at the
-moment it wakes*, not from which agent asked. An earlier version tagged each
-request with a token and had the launcher abort on a mismatch; that dropped the
-music entirely when one agent's request landed while another's launcher was
-still in its start delay.
-
-## Getting out of the way
-
-While the music plays, `libexec/audio-watch` guards it. The moment any other
-process starts producing audio — a call, a video, Spotify — the music **stops
-at once, with no fade**, because the point is to get out of the way.
-
-Rule 4 above and that guard share one source of truth: CoreAudio's process-object
-API (macOS 14.4+). Every audio client is an `AudioObject` carrying a PID and an
-`IsRunningOutput` flag, so the answer is exact — an app merely holding an audio
-session open reports false. Measured on this machine, Slack, Teams and an idle
-Safari all report false while a playing `mpv` reports true.
-
-### Why it polls
-
-CoreAudio publishes change notifications for both the process list and the
-running-output flag, and an earlier version of `audio-watch` used them instead
-of polling. Measured on macOS 25.6 those notifications arrived **~33 seconds**
-after the event — the same for a newly spawned process and for one already
-registered. That is useless for "get out of the way now", so the listeners were
-dropped.
-
-What replaced them is one long-lived process polling twice a second. A full scan
-of every audio client costs **1.87 ms** (`audio-watch --bench`), so the guard
-costs roughly 0.4% of one core while music is playing and nothing at all when it
-is not. Measured worst-case reaction time is the poll interval; observed
-reaction to an already-running app starting playback was 0.07 s.
-
-There is a cheaper fallback if the API is ever unavailable: `coreaudiod` holds
-one `PreventUserIdleSystemSleep` power assertion per playing audio context, so
-`pmset -g assertions` gives a usable yes/no. It is only used if `audio-watch`
-reports the API missing.
-
-## Why mpv rather than ffplay
-
-ffplay cannot change volume once it has started, so it cannot fade out on a stop
-it did not know was coming. mpv exposes a JSON IPC socket, so `libexec/mpv-fade`
-ramps the volume down and quits at the bottom of the ramp. The fade-in uses the
-same mechanism in reverse rather than a second, filter-based one. ffplay remains
-a fallback if mpv is not installed — with no fade-out.
-
-## Layout
-
-Everything lives here; the two agents reach it by symlink.
+Two Claude Code windows, or Claude Code and omp together, share one player.
 
 ```
-~/agent-tunes/
-├── bin/agent-tunes            all behaviour
-├── config.env                 settings, sourced live
-├── audio/                     tracks (first one found is used)
-├── state/                     enabled flag, pidfile, mpv socket, active sessions, log
-├── src/audio-watch.swift      source for the CoreAudio checker
-├── libexec/
-│   ├── audio-watch            compiled checker (agent-tunes build)
-│   └── mpv-fade               volume ramp over mpv's IPC socket
-├── claude/                    a local Claude Code marketplace
-│   ├── .claude-plugin/marketplace.json
-│   └── plugins/agent-tunes/   plugin.json, hooks/hooks.json, commands/tunes.md
-└── omp/agent-tunes.ts         omp extension
+A starts work   ->  music starts
+B starts work   ->  music keeps going
+A finishes      ->  music keeps going, B is still busy
+B finishes      ->  music fades out
 ```
 
-Symlinks pointing at this directory:
-
-| Link | Target |
-|---|---|
-| `~/.local/bin/agent-tunes` | `bin/agent-tunes` |
-| `~/.omp/agent/extensions/agent-tunes.ts` | `omp/agent-tunes.ts` |
-| `~/.claude/plugins/cache/agent-tunes/agent-tunes/1.0.0` | `claude/plugins/agent-tunes` |
-
-The third one matters: `claude plugin install` **copies** a local plugin into its
-cache, so the copy was replaced with a symlink. Edits to `hooks.json` are
-therefore live, needing only a Claude Code restart rather than a reinstall.
-
-`~/.claude/settings.json` holds the marketplace entry and the enabled flag.
-
-## Hook wiring
-
-| Agent | Start | Stop |
-|---|---|---|
-| Claude Code | `UserPromptSubmit`, `PreToolUse` | `Stop`, `SessionEnd` |
-| omp | `agent_start` | `agent_end`, `session_shutdown` |
-
-The omp extension reference-counts nested agents in-process, so a subagent
-finishing does not stop the music while the main agent is still working.
+Each session registers itself as a file in `state/active/` and removes it when it
+finishes. The last one out stops the music. `agent-tunes status` shows who is
+currently registered.
 
 ## Settings
 
-Edit `config.env` — it is sourced on every invocation, so changes are live.
+Copy `config.example.env` to `config.env`, which the installer does for you. It's
+read fresh on every invocation, so edits apply straight away.
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `TUNES_VOLUME` | `30` | player volume, 0-100 |
-| `TUNES_START_DELAY` | `4` | seconds of continuous work before audio starts |
-| `TUNES_FADE_IN` | `4` | fade-in length in seconds |
-| `TUNES_FADE_OUT` | `1.5` | fade-out length when a turn ends |
-| `TUNES_MIN_TAIL` | `300` | never start within this many seconds of the end |
-| `TUNES_RESPECT_OTHER_AUDIO` | `1` | `0` starts even when something else is playing |
-| `TUNES_YIELD_TO_OTHER_AUDIO` | `1` | `0` keeps playing when another process starts audio |
-| `TUNES_TRACK` | `""` | filename in `audio/`, or an absolute path |
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `TUNES_VOLUME` | `30` | Volume out of 100 |
+| `TUNES_START_DELAY` | `4` | Seconds of work before the music starts |
+| `TUNES_FADE_IN` | `4` | Fade in length |
+| `TUNES_FADE_OUT` | `1.5` | Fade out length |
+| `TUNES_MIN_TAIL` | `300` | Never start this close to the end of a track |
+| `TUNES_RESPECT_OTHER_AUDIO` | `1` | Set to `0` to start even when something else is playing |
+| `TUNES_YIELD_TO_OTHER_AUDIO` | `1` | Set to `0` to keep playing when another app starts |
+| `TUNES_TRACK` | empty | A filename in `audio/`, or an absolute path. Empty picks the first file found |
 
 ## Other commands
 
 ```bash
-agent-tunes play              # start now, ignoring the work tracking
-agent-tunes stop-all          # stop now and clear all sessions
+agent-tunes play              # start now, without waiting for an agent
+agent-tunes stop-all          # stop now and clear every session
 agent-tunes doctor            # check the wiring
-agent-tunes build             # recompile audio-watch after editing src/
-agent-tunes download <url>    # add another track with yt-dlp
+agent-tunes build             # rebuild the audio checker after editing src/
 ```
 
-## From a fresh clone
+## How it works
 
-`audio/` and the compiled `libexec/audio-watch` are not in the repo, so:
+Everything lives in one bash script. The Claude Code plugin and the omp extension
+are thin wrappers that call it, so the two can't drift apart.
 
-```bash
-agent-tunes build                    # compile the CoreAudio checker
-agent-tunes download <url>           # fetch a track of your own
-agent-tunes doctor                   # confirm the wiring
-agent-tunes on
-```
+| | Starts on | Stops on |
+| --- | --- | --- |
+| Claude Code | `UserPromptSubmit`, `PreToolUse` | `Stop`, `SessionEnd` |
+| omp | `agent_start` | `agent_end`, `session_shutdown` |
+
+**Telling whether anything else is playing.** CoreAudio has had a process-object
+API since macOS 14.4. Every audio client shows up as an object with a PID and an
+`IsRunningOutput` flag, which gives an exact answer rather than a guess.
+`libexec/audio-watch` reads it.
+
+**Why it polls.** That API also publishes change notifications for the same two
+properties, but on macOS 25.6 they arrive about 33 seconds after the event,
+whether the process is new or already registered. That is no use when the job is
+to get out of the way now, so `audio-watch` polls twice a second instead. A full
+scan of every audio client takes 1.87 ms, which you can measure yourself with
+`audio-watch --bench`, and it only runs while music is playing. Reaction time to
+an app starting playback measured 0.07 s.
+
+On anything older than macOS 14.4 it falls back to power assertions. `coreaudiod`
+holds one per playing audio context, so `pmset` gives a workable yes or no.
+
+**Why mpv and not ffplay.** ffplay can't change its volume once it has started,
+so it can't fade out of a stop it didn't see coming. mpv exposes a JSON IPC
+socket, so `libexec/mpv-fade` ramps the volume down and quits at the bottom of the
+ramp. The fade in runs the same code in reverse.
 
 ## Tests
 
@@ -187,21 +159,27 @@ agent-tunes on
 tests/suite.sh
 ```
 
-23 checks covering the switch, multi-agent reference counting, the fade-out
-ramp, yielding to other audio, start suppression, random offsets and cleanup.
-It plays audio out loud and takes about a minute.
+23 checks over the switch, multi-agent counting, the fade ramp, yielding, start
+suppression, random offsets and cleanup. It plays audio out loud and takes about
+a minute.
 
-## Requirements
+## What you need
 
-`mpv` (`brew install mpv`), `ffprobe` (`brew install ffmpeg`), `yt-dlp` for
-downloading, and `swiftc` from the Xcode command line tools to build
-`audio-watch`. macOS 14.4 or later for the audio check; older versions fall back
-to power assertions.
+macOS 14.4 or later, plus `mpv`, `ffmpeg` and `yt-dlp`. The installer offers to
+fetch these through Homebrew. Building the audio checker needs `swiftc` from the
+Xcode command line tools (`xcode-select --install`); without it agent-tunes falls
+back to power assertions and still works.
 
 ## Uninstall
 
 ```bash
 claude plugin uninstall agent-tunes@agent-tunes
 claude plugin marketplace remove agent-tunes
-rm ~/.omp/agent/extensions/agent-tunes.ts ~/.local/bin/agent-tunes
+rm ~/.omp/agent/extensions/agent-tunes.ts ~/.local/bin/agent-tunes ~/.agent-tunes
 ```
+
+Then delete the clone.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

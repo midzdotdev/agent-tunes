@@ -3,7 +3,7 @@
 
 Usage: mpv-fade <socket> <from> <to> <seconds> [--quit]
 
-Writes only — mpv's replies and event stream are ignored, so there is no
+Writes only. mpv's replies and event stream are ignored, so there is no
 request/response parsing to get out of step with.
 """
 import json

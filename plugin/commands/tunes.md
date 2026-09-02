@@ -1,9 +1,9 @@
 ---
 description: Turn agent-tunes background music on or off, or show its status
-allowed-tools: Bash(~/agent-tunes/bin/agent-tunes:*)
+allowed-tools: Bash(~/.agent-tunes/bin/agent-tunes:*)
 ---
 
-Run `~/agent-tunes/bin/agent-tunes` with the argument the user asked for:
+Run `~/.agent-tunes/bin/agent-tunes` with the argument the user asked for:
 
 - no argument, or "status" → `status`
 - "on" / "off" / "toggle" → that subcommand
