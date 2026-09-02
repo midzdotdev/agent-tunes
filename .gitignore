@@ -1,0 +1,11 @@
+# Tracks. Large binaries with their own licensing — fetch your own with
+# `agent-tunes download <url>`.
+audio/
+
+# Runtime state: enabled flag, pidfile, mpv socket, active sessions, log.
+state/
+
+# Compiled from src/audio-watch.swift by `agent-tunes build`.
+libexec/audio-watch
+
+.DS_Store

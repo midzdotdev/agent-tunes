@@ -1,0 +1,22 @@
+{
+  "name": "agent-tunes",
+  "owner": {
+    "name": "James Middleton",
+    "email": "james@midz.dev"
+  },
+  "metadata": {
+    "description": "Local marketplace for agent-tunes",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "agent-tunes",
+      "source": "./plugins/agent-tunes",
+      "description": "Plays background music from a random position while Claude Code is working, but only when nothing else on the machine is playing audio.",
+      "version": "1.0.0",
+      "author": { "name": "James Middleton" },
+      "category": "productivity",
+      "keywords": ["audio", "music", "hooks", "focus"]
+    }
+  ]
+}

@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+# agent-tunes — background music while a coding agent is working.
+#
+# One implementation, two front-ends: a Claude Code plugin (hooks.json) and an
+# omp extension (omp/agent-tunes.ts). Both shell out to this script, so the
+# behaviour lives in exactly one place.
+#
+# Rules:
+#   - plays only when enabled (state/enabled)
+#   - plays only when nothing else on the machine is producing audio
+#   - starts from a random position in the track
+#   - waits START_DELAY seconds of continuous work before starting, so short
+#     turns do not produce a two-second blip of jazz
+#   - stops when the last active agent session finishes
+
+set -uo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+AUDIO_DIR="$ROOT/audio"
+STATE="$ROOT/state"
+ACTIVE="$STATE/active"
+CONF="$ROOT/config.env"
+
+# ---------------------------------------------------------------- config ----
+TUNES_VOLUME=30          # player volume, 0-100
+TUNES_START_DELAY=4      # seconds of continuous work before audio starts
+TUNES_FADE_IN=4          # fade-in length in seconds
+TUNES_FADE_OUT=1.5       # fade-out length in seconds when a turn ends
+TUNES_MIN_TAIL=300       # never start within this many seconds of the end
+TUNES_RESPECT_OTHER_AUDIO=1
+TUNES_YIELD_TO_OTHER_AUDIO=1  # stop at once (no fade) if another process starts audio
+TUNES_TRACK=""           # empty = first file in audio/
+# shellcheck source=/dev/null
+[ -f "$CONF" ] && . "$CONF"
+
+mkdir -p "$STATE" "$ACTIVE" "$AUDIO_DIR"
+
+PIDFILE="$STATE/player.pid"
+LOG="$STATE/agent-tunes.log"
+IPC="$STATE/mpv.sock"
+WATCHER="$ROOT/libexec/audio-watch"
+FADER="$ROOT/libexec/mpv-fade"
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || :; }
+
+# ---------------------------------------------------------------- helpers ---
+enabled() { [ -f "$STATE/enabled" ]; }
+
+track() {
+  if [ -n "$TUNES_TRACK" ]; then
+    case "$TUNES_TRACK" in /*) printf '%s' "$TUNES_TRACK" ;; *) printf '%s' "$AUDIO_DIR/$TUNES_TRACK" ;; esac
+    return
+  fi
+  find "$AUDIO_DIR" -maxdepth 1 -type f \
+    \( -name '*.m4a' -o -name '*.mp3' -o -name '*.opus' -o -name '*.webm' -o -name '*.wav' -o -name '*.flac' \) \
+    | sort | head -1
+}
+
+duration() {  # seconds, integer, cached per track mtime
+  local t="$1" cache stamp
+  stamp="$(stat -f '%m' "$t" 2>/dev/null || echo 0)"
+  cache="$STATE/duration.$stamp"
+  if [ -s "$cache" ]; then cat "$cache"; return; fi
+  local d
+  d="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$t" 2>/dev/null)"
+  d="${d%%.*}"
+  [ -z "$d" ] && d=0
+  rm -f "$STATE"/duration.* 2>/dev/null
+  printf '%s' "$d" >"$cache"
+  printf '%s' "$d"
+}
+
+player_pid() { [ -s "$PIDFILE" ] && cat "$PIDFILE"; }
+
+player_alive() {
+  local p; p="$(player_pid)" || return 1
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null
+}
+
+# True when some process other than our own player is producing audio.
+#
+# Preferred source is libexec/audio-watch --once, which asks CoreAudio which
+# processes are actually running output. It is exact: an app merely holding an
+# audio session open (Slack, Teams, a Safari tab) reports false.
+#
+# The fallback reads macOS power assertions — coreaudiod holds one
+# PreventUserIdleSystemSleep assertion per playing audio context. Note grep -c,
+# not grep -q: under `set -o pipefail` a short-circuiting grep kills pmset with
+# SIGPIPE and the pipeline reports failure, which would read as "idle".
+other_audio_playing() {
+  [ "$TUNES_RESPECT_OTHER_AUDIO" = "1" ] || return 1
+  local ours n
+  ours="$(player_pid || true)"
+  if [ -x "$WATCHER" ]; then
+    local rc=0
+    "$WATCHER" --once ${ours:+"$ours"} >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) return 0 ;;  # something else is playing
+      1) return 1 ;;  # definitely nothing else
+      *) : ;;         # 3 = API unavailable, fall through to power assertions
+    esac
+  fi
+  n="$(pmset -g assertions 2>/dev/null | grep -c 'coreaudiod')"
+  if [ -n "${ours:-}" ] && kill -0 "$ours" 2>/dev/null; then
+    [ "${n:-0}" -gt 1 ]   # one assertion is our own player
+  else
+    [ "${n:-0}" -gt 0 ]
+  fi
+}
+
+active_count() { find "$ACTIVE" -type f 2>/dev/null | wc -l | tr -d ' '; }
+
+# Session key: Claude Code hooks deliver JSON on stdin, omp passes --key.
+resolve_key() {
+  local explicit="${1:-}"
+  if [ -n "$explicit" ]; then printf 'k-%s' "$(printf '%s' "$explicit" | tr -c 'A-Za-z0-9_.-' '_')"; return; fi
+  if [ ! -t 0 ]; then
+    local payload sid
+    payload="$(cat 2>/dev/null)"
+    sid="$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    if [ -n "$sid" ]; then printf 'k-%s' "$(printf '%s' "$sid" | tr -c 'A-Za-z0-9_.-' '_')"; return; fi
+  fi
+  printf 'k-default'
+}
+
+# Stop playing. With fade unless $1 is "now" — yielding to another app has to be
+# immediate, since the point is to get out of its way.
+kill_player() {
+  local mode="${1:-fade}" p faded=0
+  p="$(player_pid)"
+  if [ -z "${p:-}" ] || ! kill -0 "$p" 2>/dev/null; then rm -f "$PIDFILE" "$IPC"; return; fi
+
+  if [ "$mode" = "fade" ] && [ -S "$IPC" ] && [ -x "$FADER" ]; then
+    # mpv has no fade-on-quit, so ramp its volume down over the IPC socket and
+    # let it quit at the bottom of the ramp.
+    "$FADER" "$IPC" "$TUNES_VOLUME" 0 "$TUNES_FADE_OUT" --quit 2>/dev/null && faded=1
+    local waited=0
+    while kill -0 "$p" 2>/dev/null && [ "$waited" -lt 20 ]; do sleep 0.1; waited=$((waited + 1)); done
+  fi
+
+  if kill -0 "$p" 2>/dev/null; then kill "$p" 2>/dev/null; fi
+  log "stopped pid=$p mode=$mode faded=$faded"
+  rm -f "$PIDFILE" "$IPC"
+}
+
+# ---------------------------------------------------------------- commands --
+cmd_start() {
+  local key="$1"
+  enabled || exit 0
+  : >"$ACTIVE/$key"
+
+  player_alive && exit 0
+
+  # One pending launcher at a time. If another session already has one in
+  # flight, this request rides on it: the launcher decides what to do from the
+  # registered set at the moment it wakes, not from who asked for it.
+  mkdir "$STATE/pending.lock" 2>/dev/null || exit 0
+
+  nohup "$0" _launch >>"$LOG" 2>&1 &
+  exit 0
+}
+
+cmd_launch() {  # internal: sleep, re-check, then play
+  trap 'rmdir "$STATE/pending.lock" 2>/dev/null' EXIT
+
+  sleep "$TUNES_START_DELAY"
+
+  enabled || return 0
+  [ "$(active_count)" -gt 0 ] || return 0
+  player_alive && return 0
+
+  if other_audio_playing; then log "skip: other audio playing"; return 0; fi
+
+  local t; t="$(track)"
+  if [ -z "$t" ] || [ ! -f "$t" ]; then log "skip: no track in $AUDIO_DIR"; return 0; fi
+
+  # No second lock is needed here: pending.lock is held from spawn until this
+  # function exits, so only one launcher is ever in flight.
+  local dur max off
+  dur="$(duration "$t")"
+  max=$(( dur - TUNES_MIN_TAIL ))
+  [ "$max" -lt 1 ] && max="$dur"
+  [ "$max" -lt 1 ] && max=1
+  off="$(awk -v n="$max" 'BEGIN{srand();print int(rand()*n)}')"
+
+  rm -f "$IPC"
+  if command -v mpv >/dev/null; then
+    # mpv rather than ffplay: its IPC socket is what makes a fade-out possible,
+    # since volume can be changed while it plays.
+    nohup mpv --no-video --no-terminal --really-quiet --no-config \
+      --start="$off" --volume=0 \
+      --input-ipc-server="$IPC" \
+      "$t" >/dev/null 2>&1 &
+    local pid=$!
+    printf '%s' "$pid" >"$PIDFILE"
+    # Ramp up once the socket appears, so the fade-in is the same mechanism as
+    # the fade-out rather than a second, filter-based one.
+    local waited=0
+    while [ ! -S "$IPC" ] && kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+      sleep 0.1; waited=$((waited + 1))
+    done
+    nohup "$FADER" "$IPC" 0 "$TUNES_VOLUME" "$TUNES_FADE_IN" >/dev/null 2>&1 &
+  else
+    nohup ffplay -nodisp -autoexit -loglevel quiet \
+      -volume "$TUNES_VOLUME" -ss "$off" \
+      -af "afade=t=in:st=0:d=$TUNES_FADE_IN" \
+      "$t" >/dev/null 2>&1 &
+    printf '%s' "$!" >"$PIDFILE"
+  fi
+  log "playing pid=$(player_pid) offset=${off}s/${dur}s track=$(basename "$t")"
+
+  # Guard: stop the instant anything else starts playing.
+  if [ "$TUNES_YIELD_TO_OTHER_AUDIO" = "1" ]; then
+    nohup "$0" _guard "$(player_pid)" >>"$LOG" 2>&1 &
+  fi
+}
+
+# Blocks in an event listener until another process starts audio, then stops us
+# immediately and without a fade. Exits quietly when our own player goes away.
+cmd_guard() {
+  local pid="$1" out rc=0
+  [ -x "$WATCHER" ] || return 0
+  out="$("$WATCHER" "$pid" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 0                       # 4 = player already gone
+  [ "$(player_pid || true)" = "$pid" ] || return 0   # a newer player owns the slot
+  log "yielding: $out"
+  kill_player now
+}
+
+cmd_stop() {
+  local key="$1"
+  # Deregister, then stop only if this was the last agent still working.
+  rm -f "$ACTIVE/$key"
+  [ "$(active_count)" -gt 0 ] && exit 0
+  kill_player
+  exit 0
+}
+
+cmd_stop_all() {
+  rm -f "$ACTIVE"/* 2>/dev/null
+  kill_player
+}
+
+cmd_on()     { : >"$STATE/enabled"; echo "agent-tunes: on"; }
+cmd_off()    { rm -f "$STATE/enabled"; cmd_stop_all; echo "agent-tunes: off"; }
+cmd_toggle() { if enabled; then cmd_off; else cmd_on; fi; }
+
+cmd_status() {
+  local t dur p
+  t="$(track)"; p="$(player_pid || true)"
+  echo "agent-tunes"
+  echo "  state      : $(enabled && echo on || echo off)"
+  echo "  root       : $ROOT"
+  if [ -n "$t" ] && [ -f "$t" ]; then
+    dur="$(duration "$t")"
+    echo "  track      : $(basename "$t") (${dur}s)"
+  else
+    echo "  track      : none found in $AUDIO_DIR"
+  fi
+  if player_alive; then echo "  playing    : yes (pid $p)"; else echo "  playing    : no"; fi
+  echo "  other audio: $(other_audio_playing && echo busy || echo idle)"
+  echo "  sessions   : $(active_count) working [$(ls "$ACTIVE" 2>/dev/null | sed 's/^k-//' | tr '\n' ' ')]"
+  echo "  volume     : $TUNES_VOLUME/100, start delay ${TUNES_START_DELAY}s"
+  echo "  fades      : in ${TUNES_FADE_IN}s, out ${TUNES_FADE_OUT}s"
+  echo "  yields     : $([ "$TUNES_YIELD_TO_OTHER_AUDIO" = "1" ] && echo "yes, immediately and without fade" || echo no)"
+}
+
+cmd_play() {  # manual: ignore the work-tracking, respect the audio-busy rule
+  player_alive && { echo "already playing (pid $(player_pid))"; return 0; }
+  if other_audio_playing; then echo "not starting: something else is playing"; return 1; fi
+  : >"$ACTIVE/k-manual"
+  TUNES_START_DELAY=0 cmd_launch
+  player_alive && echo "playing (pid $(player_pid))"
+}
+
+cmd_download() {
+  [ $# -ge 1 ] || { echo "usage: agent-tunes download <url>" >&2; return 2; }
+  command -v yt-dlp >/dev/null || { echo "yt-dlp not installed (brew install yt-dlp)" >&2; return 1; }
+  ( cd "$AUDIO_DIR" && yt-dlp -x --audio-format m4a --no-playlist -o "%(title)s.%(ext)s" "$1" )
+}
+
+cmd_build() {  # recompile the CoreAudio watcher after editing src/
+  command -v swiftc >/dev/null || { echo "swiftc not found (needs Xcode command line tools)" >&2; return 1; }
+  mkdir -p "$ROOT/libexec"
+  swiftc -O -o "$WATCHER" "$ROOT/src/audio-watch.swift" && echo "built $WATCHER"
+}
+
+cmd_doctor() {
+  local ok=0
+  chk() { if eval "$2" >/dev/null 2>&1; then echo "  ok    $1"; else echo "  FAIL  $1"; ok=1; fi; }
+  echo "agent-tunes doctor"
+  chk "mpv installed"      "command -v mpv"
+  chk "ffprobe installed"  "command -v ffprobe"
+  chk "yt-dlp installed"   "command -v yt-dlp"
+  chk "audio-watch built"  "[ -x \"$WATCHER\" ]"
+  chk "audio-watch works"  "\"$WATCHER\" --once >/dev/null 2>&1; [ \$? -ne 3 ]"
+  chk "mpv-fade present"   "[ -x \"$FADER\" ]"
+  chk "track present"      "[ -f \"$(track)\" ]"
+  chk "omp extension link" "[ -L \"$HOME/.omp/agent/extensions/agent-tunes.ts\" ]"
+  chk "claude plugin registered" "[ \"\$(claude plugin list 2>/dev/null | grep -c agent-tunes)\" -gt 0 ]"
+  chk "agent-tunes on PATH" "command -v agent-tunes"
+  return $ok
+}
+
+usage() {
+  cat <<'EOF'
+agent-tunes — background music while a coding agent works
+
+  agent-tunes on|off|toggle      enable / disable (this is the switch)
+  agent-tunes status             what is enabled, what is playing
+  agent-tunes play               start now, ignoring the work tracking
+  agent-tunes stop-all           stop now and clear all sessions
+  agent-tunes doctor             check the wiring
+  agent-tunes build              recompile the CoreAudio watcher after editing src/
+  agent-tunes download <url>     add another track with yt-dlp
+
+  agent-tunes start [--key K]    (hooks) mark a session as working
+  agent-tunes stop  [--key K]    (hooks) mark a session as finished
+EOF
+}
+
+# ------------------------------------------------------------------- main ---
+cmd="${1:-status}"; shift || true
+key_arg=""
+if [ "${1:-}" = "--key" ]; then key_arg="${2:-}"; shift 2 || true; fi
+
+case "$cmd" in
+  start)     cmd_start "$(resolve_key "$key_arg")" ;;
+  stop)      cmd_stop  "$(resolve_key "$key_arg")" ;;
+  _launch)   cmd_launch ;;
+  _guard)    cmd_guard "${1:-}" ;;
+  stop-all)  cmd_stop_all ;;
+  on)        cmd_on ;;
+  off)       cmd_off ;;
+  toggle)    cmd_toggle ;;
+  status)    cmd_status ;;
+  play)      cmd_play ;;
+  download)  cmd_download "$@" ;;
+  doctor)    cmd_doctor ;;
+  build)     cmd_build ;;
+  -h|--help|help) usage ;;
+  *)         usage; exit 2 ;;
+esac
