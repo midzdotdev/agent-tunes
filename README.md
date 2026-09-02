@@ -23,27 +23,37 @@ Works with [Claude Code](https://claude.com/claude-code) and
 
 ## Install
 
+If you use Claude Code, two commands and you're done:
+
 ```bash
-git clone https://github.com/midzdotdev/agent-tunes.git
-cd agent-tunes
-./install.sh
+claude plugin marketplace add midzdotdev/agent-tunes
+claude plugin install agent-tunes@agent-tunes
 ```
 
-The installer checks for what it needs, offers to fetch anything missing through
-Homebrew, compiles a small helper, and registers itself with whichever agents you
-have. Run it again whenever you like; it skips whatever is already done.
+The plugin finishes setting itself up on the next session start, and Claude Code
+picks it up without a restart. It will tell you if it needs anything, which on a
+machine without [mpv](https://mpv.io) means `brew install mpv`.
 
-Then give it something to play:
+For omp, or if you would rather see what you're running first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/midzdotdev/agent-tunes/main/install.sh | bash
+```
+
+That clones the repo, fetches what it needs, wires up whichever agents you have,
+and offers to download your first track while you're there. Cloning and running
+`./install.sh` yourself does exactly the same thing. Either way it's safe to run
+again later.
+
+Then give it something to play, if you skipped that during setup:
 
 ```bash
 agent-tunes download "https://www.youtube.com/watch?v=..."
 ```
 
-That accepts anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) understands,
-which is most audio and video sites plus plain file links. You can also drop a
-file straight into `audio/`. Use music you have the right to play.
-
-Restart Claude Code so it picks up the hooks, and you're done.
+That takes anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) understands, which
+covers most audio and video sites plus plain file links. You can also drop a file
+into `~/.agent-tunes/audio/`. Use music you have the right to play.
 
 ## Turning it off
 
@@ -54,7 +64,7 @@ agent-tunes status
 
 Both agents also have a `/tunes` command that takes the same words.
 
-Nothing is left running when it's off. The switch is a file in `state/`, checked
+Nothing is left running when it's off. The switch is a file in `~/.agent-tunes/state/`, checked
 before anything else happens.
 
 ## When it plays
@@ -93,14 +103,18 @@ A finishes      ->  music keeps going, B is still busy
 B finishes      ->  music fades out
 ```
 
-Each session registers itself as a file in `state/active/` and removes it when it
+Each session registers itself as a file in `~/.agent-tunes/state/active/`, removing it when it
 finishes. The last one out stops the music. `agent-tunes status` shows who is
 currently registered.
 
 ## Settings
 
-Copy `config.example.env` to `config.env`, which the installer does for you. It's
-read fresh on every invocation, so edits apply straight away.
+Settings live in `~/.agent-tunes/config.env`, which setup creates from
+`config.example.env`. It's read fresh on every invocation, so edits apply
+straight away.
+
+Your music, settings and state all live in `~/.agent-tunes`, well away from the
+installed code, so upgrading never touches them.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -165,20 +179,25 @@ a minute.
 
 ## What you need
 
-macOS 14.4 or later, plus `mpv`, `ffmpeg` and `yt-dlp`. The installer offers to
-fetch these through Homebrew. Building the audio checker needs `swiftc` from the
-Xcode command line tools (`xcode-select --install`); without it agent-tunes falls
-back to power assertions and still works.
+macOS 14.4 or later and [mpv](https://mpv.io), which plays the audio. `ffmpeg`
+and `yt-dlp` are only needed by `agent-tunes download`. Setup offers to fetch all
+three through Homebrew.
+
+You do not need Xcode. Setup downloads a prebuilt universal binary for the audio
+checker, builds it with `swiftc` if that download fails, and falls back to macOS
+power assertions if neither works.
 
 ## Uninstall
 
 ```bash
+agent-tunes off
 claude plugin uninstall agent-tunes@agent-tunes
 claude plugin marketplace remove agent-tunes
-rm ~/.omp/agent/extensions/agent-tunes.ts ~/.local/bin/agent-tunes ~/.agent-tunes
+rm -f ~/.omp/agent/extensions/agent-tunes.ts ~/.local/bin/agent-tunes
 ```
 
-Then delete the clone.
+Then delete `~/.agent-tunes` for your music and settings, and the clone if you
+made one.
 
 ## Licence
 

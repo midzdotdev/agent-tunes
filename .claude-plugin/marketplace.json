@@ -12,15 +12,24 @@
   "plugins": [
     {
       "name": "agent-tunes",
-      "source": "./plugin",
+      "source": "./",
       "description": "Plays music while Claude Code is working, starting from a random position, and only when nothing else on your Mac is playing audio.",
       "version": "1.0.0",
-      "author": { "name": "James Middleton", "email": "james@midz.dev" },
+      "author": {
+        "name": "James Middleton",
+        "email": "james@midz.dev"
+      },
       "homepage": "https://github.com/midzdotdev/agent-tunes",
       "repository": "https://github.com/midzdotdev/agent-tunes",
       "license": "MIT",
       "category": "productivity",
-      "keywords": ["audio", "music", "hooks", "focus", "macos"]
+      "keywords": [
+        "audio",
+        "music",
+        "hooks",
+        "focus",
+        "macos"
+      ]
     }
   ]
 }

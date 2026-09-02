@@ -15,11 +15,15 @@
 
 set -uo pipefail
 
+# Code lives with the checkout. Data lives in the user's home, so that a plugin
+# update, which replaces the installed copy wholesale, cannot take your track,
+# your settings or a running player with it.
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-AUDIO_DIR="$ROOT/audio"
-STATE="$ROOT/state"
+DATA="${AGENT_TUNES_HOME:-$HOME/.agent-tunes}"
+AUDIO_DIR="$DATA/audio"
+STATE="$DATA/state"
 ACTIVE="$STATE/active"
-CONF="$ROOT/config.env"
+CONF="$DATA/config.env"
 
 # ---------------------------------------------------------------- config ----
 TUNES_VOLUME=30          # player volume, 0-100
@@ -250,7 +254,8 @@ cmd_status() {
   t="$(track)"; p="$(player_pid || true)"
   echo "agent-tunes"
   echo "  state      : $(enabled && echo on || echo off)"
-  echo "  root       : $ROOT"
+  echo "  code       : $ROOT"
+  echo "  data       : $DATA"
   if [ -n "$t" ] && [ -f "$t" ]; then
     dur="$(duration "$t")"
     echo "  track      : $(basename "$t") (${dur}s)"

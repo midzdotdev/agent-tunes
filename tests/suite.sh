@@ -2,15 +2,18 @@
 # agent-tunes acceptance suite. Run from ~/agent-tunes.
 cd ~/agent-tunes || exit 1
 T=./bin/agent-tunes
+D="${AGENT_TUNES_HOME:-$HOME/.agent-tunes}"
+TRACK="$(find "$D/audio" -maxdepth 1 -type f | sort | head -1)"
+[ -n "$TRACK" ] || { echo "No track in $D/audio. Add one with: agent-tunes download <url>"; exit 1; }
 PASS=0; FAIL=0
 ok()   { echo "  PASS  $1"; PASS=$((PASS+1)); }
 bad()  { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 chk()  { if [ "$2" = "$3" ]; then ok "$1 ($3)"; else bad "$1 (want '$3', got '$2')"; fi; }
-playing() { pgrep -f "mpv .*elevator-jazz" >/dev/null && echo yes || echo no; }
-count()   { find state/active -type f 2>/dev/null | wc -l | tr -d ' '; }
-cleanup() { $T stop-all >/dev/null 2>&1; pkill -f "ffplay.*elevator" 2>/dev/null; pkill -f "mpv.*elevator" 2>/dev/null; sleep 1; }
+playing() { pgrep -f "mpv .*$D/audio" >/dev/null && echo yes || echo no; }
+count()   { find "$D"/state/active -type f 2>/dev/null | wc -l | tr -d ' '; }
+cleanup() { $T stop-all >/dev/null 2>&1; pkill -f "ffplay.*$D/audio" 2>/dev/null; pkill -f "mpv.*$D/audio" 2>/dev/null; sleep 1; }
 
-cleanup; rm -f state/agent-tunes.log
+cleanup; rm -f "$D"/state/agent-tunes.log
 
 echo "== 1. doctor =="
 if $T doctor | grep -q FAIL; then bad "doctor has failures"; $T doctor; else ok "all doctor checks green"; fi
@@ -33,10 +36,10 @@ $T stop  --key AgentA >/dev/null; sleep 1
 chk "A leaves"      "$(playing)/$(count)" "yes/2"
 $T stop  --key AgentC >/dev/null; sleep 1
 chk "C leaves"      "$(playing)/$(count)" "yes/1"
-OFF1=$(grep -c "playing pid=" state/agent-tunes.log)
+OFF1=$(grep -c "playing pid=" "$D"/state/agent-tunes.log)
 $T stop  --key AgentB >/dev/null; sleep 1
 chk "last one out stops it" "$(playing)/$(count)" "no/0"
-chk "stopped with a fade" "$(tail -1 state/agent-tunes.log | grep -o 'mode=fade faded=1')" "mode=fade faded=1"
+chk "stopped with a fade" "$(tail -1 "$D"/state/agent-tunes.log | grep -o 'mode=fade faded=1')" "mode=fade faded=1"
 chk "unknown key is harmless" "$($T stop --key NeverRegistered >/dev/null 2>&1; echo $?)" "0"
 
 echo "== 4. fade-out ramps the volume =="
@@ -46,7 +49,7 @@ VOLS=""
     v=$(python3 -c "
 import json,socket,sys
 try:
-    s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect('state/mpv.sock')
+    s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect('$D/state/mpv.sock')
     s.sendall((json.dumps({'command':['get_property','volume']})+'\n').encode())
     buf=b''
     while True:
@@ -73,38 +76,38 @@ chk "stop takes about the fade length" "$(python3 -c "print('yes' if 1.4 <= $T1-
 
 echo "== 5. yields immediately to other audio =="
 $T play >/dev/null; sleep 5
-P=$(cat state/player.pid)
+P=$(cat "$D"/state/player.pid)
 T0=$(python3 -c 'import time;print(time.time())')
-mpv --no-video --no-terminal --really-quiet --no-config --volume=5 --start=900 audio/elevator-jazz.m4a >/dev/null 2>&1 & O=$!
+mpv --no-video --no-terminal --really-quiet --no-config --volume=5 --start=900 "$TRACK" >/dev/null 2>&1 & O=$!
 for i in $(seq 1 500); do kill -0 "$P" 2>/dev/null || break; sleep 0.02; done
 T1=$(python3 -c 'import time;print(time.time())')
 LAT=$(python3 -c "print('%.2f' % ($T1-$T0))")
 echo "     yielded after ${LAT}s"
 chk "stopped for the other app" "$(kill -0 "$P" 2>/dev/null && echo alive || echo gone)" "gone"
 chk "yielded within 3s" "$(python3 -c "print('yes' if $LAT < 3.0 else 'no')")" "yes"
-chk "no fade when yielding" "$(tail -1 state/agent-tunes.log | grep -o 'mode=now faded=0')" "mode=now faded=0"
+chk "no fade when yielding" "$(tail -1 "$D"/state/agent-tunes.log | grep -o 'mode=now faded=0')" "mode=now faded=0"
 
 kill $O 2>/dev/null; sleep 2
 
 echo "== 6. will not start while another app is playing =="
 # ffplay as the interferer, so "is OUR player running" stays unambiguous.
-ffplay -nodisp -autoexit -loglevel quiet -volume 5 -ss 900 audio/elevator-jazz.m4a >/dev/null 2>&1 & O2=$!
+ffplay -nodisp -autoexit -loglevel quiet -volume 5 -ss 900 "$TRACK" >/dev/null 2>&1 & O2=$!
 sleep 3
 $T start --key Busy >/dev/null; sleep 8
 chk "start suppressed" "$(playing)" "no"
-chk "logged the skip" "$(tail -1 state/agent-tunes.log | grep -o 'skip: other audio playing')" "skip: other audio playing"
+chk "logged the skip" "$(tail -1 "$D"/state/agent-tunes.log | grep -o 'skip: other audio playing')" "skip: other audio playing"
 kill $O2 2>/dev/null; sleep 2
 $T stop --key Busy >/dev/null
 
 echo "== 7. starts from a random position =="
-OFFS=$(grep -o 'offset=[0-9]*' state/agent-tunes.log | sort -u | wc -l | tr -d ' ')
-STARTS=$(grep -c 'playing pid=' state/agent-tunes.log)
+OFFS=$(grep -o 'offset=[0-9]*' "$D"/state/agent-tunes.log | sort -u | wc -l | tr -d ' ')
+STARTS=$(grep -c 'playing pid=' "$D"/state/agent-tunes.log)
 chk "every start used a distinct offset" "$OFFS" "$STARTS"
 
 echo "== 8. leaves nothing behind =="
 cleanup
 chk "no stray players or guards" "$(pgrep -f 'mpv|ffplay|audio-watch' | wc -l | tr -d ' ')" "0"
-chk "no stale locks" "$(ls -d state/pending.lock state/mpv.sock 2>/dev/null | wc -l | tr -d ' ')" "0"
+chk "no stale locks" "$(ls -d "$D"/state/pending.lock "$D"/state/mpv.sock 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 echo
 echo "=================== $PASS passed, $FAIL failed ==================="
