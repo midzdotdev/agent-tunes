@@ -183,9 +183,14 @@ macOS 14.4 or later and [mpv](https://mpv.io), which plays the audio. `ffmpeg`
 and `yt-dlp` are only needed by `agent-tunes download`. Setup offers to fetch all
 three through Homebrew.
 
-You do not need Xcode. Setup downloads a prebuilt universal binary for the audio
-checker, builds it with `swiftc` if that download fails, and falls back to macOS
-power assertions if neither works.
+You do not need Xcode or any developer tools. Setup downloads `audio-watch`
+prebuilt as a universal binary covering both Apple silicon and Intel. It links
+only against libraries macOS already ships, including the Swift runtime in
+`/usr/lib/swift`, so it runs on a stock Mac.
+
+Building from source is for people changing `src/audio-watch.swift`. Setup will
+also compile it with `swiftc` if the download fails, say because you're offline,
+and falls back to macOS power assertions if that isn't available either.
 
 ## Uninstall
 
