@@ -92,6 +92,16 @@ It knows the difference between an app that is playing and an app that merely ha
 audio open. Slack, Teams and an idle Safari all sit there holding audio sessions
 without making a sound, and none of them count.
 
+Notification chimes and system alerts do not count either. They come from
+`systemsoundserverd`, which is on the ignore list because CoreAudio keeps its
+output marked as running long after the sound has finished: a half-second chime
+was measured still reading as "playing" 10.35 s later. A time threshold cannot
+separate that from a real interruption, so the daemon is excluded by name.
+`TUNES_IGNORE_PROCESSES` controls the list.
+
+Anything else has to keep playing for `TUNES_YIELD_SUSTAIN` seconds before the
+music gets out of its way, which filters brief noises from short-lived processes.
+
 ## Several agents at once
 
 Two Claude Code windows, or Claude Code and omp together, share one player.
@@ -125,6 +135,8 @@ installed code, so upgrading never touches them.
 | `TUNES_MIN_TAIL` | `300` | Never start this close to the end of a track |
 | `TUNES_RESPECT_OTHER_AUDIO` | `1` | Set to `0` to start even when something else is playing |
 | `TUNES_YIELD_TO_OTHER_AUDIO` | `1` | Set to `0` to keep playing when another app starts |
+| `TUNES_YIELD_SUSTAIN` | `1` | Seconds another app must keep playing before yielding |
+| `TUNES_IGNORE_PROCESSES` | `systemsoundserverd` | Executables that never count, whatever they play |
 | `TUNES_TRACK` | empty | A filename in `audio/`, or an absolute path. Empty picks the first file found |
 
 ## Other commands
@@ -173,9 +185,9 @@ ramp. The fade in runs the same code in reverse.
 tests/suite.sh
 ```
 
-23 checks over the switch, multi-agent counting, the fade ramp, yielding, start
-suppression, random offsets and cleanup. It plays audio out loud and takes about
-a minute.
+24 checks over the switch, multi-agent counting, the fade ramp, yielding,
+notification immunity, start suppression, random offsets and cleanup. It plays
+audio out loud and takes about a minute.
 
 ## What you need
 

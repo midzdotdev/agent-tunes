@@ -15,9 +15,21 @@ DATA="${AGENT_TUNES_HOME:-$HOME/.agent-tunes}"
 STAMP="$DATA/.setup-done"
 RELEASE="https://github.com/midzdotdev/agent-tunes/releases/latest/download/audio-watch"
 
-# Fast path: already set up.
-if [ -f "$STAMP" ] && [ -x "$ROOT/libexec/audio-watch" ]; then
+# The stamp records which version was set up. A plugin update ships a new
+# audio-watch, so a version change has to re-fetch it rather than keep the old
+# binary that happens to still be sitting there.
+VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "$ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1)"
+VERSION="${VERSION:-unknown}"
+
+# Fast path: already set up, at this version.
+if [ -x "$ROOT/libexec/audio-watch" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$VERSION" ]; then
   exit 0
+fi
+
+# A version we have not set up yet: drop the old checker so it is fetched again.
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" != "$VERSION" ]; then
+  rm -f "$ROOT/libexec/audio-watch"
 fi
 
 mkdir -p "$DATA/audio" "$DATA/state" "$ROOT/libexec" 2>/dev/null
@@ -48,10 +60,10 @@ if [ ! -x "$ROOT/libexec/audio-watch" ]; then
     if [ ! -x "$root/libexec/audio-watch" ] && command -v swiftc >/dev/null; then
       swiftc -O -o "$root/libexec/audio-watch" "$root/src/audio-watch.swift" >/dev/null 2>&1
     fi
-    : >"$stamp"
-  ' _ "$ROOT" "$STAMP" "$RELEASE" >/dev/null 2>&1 &
+    printf '%s' "$4" >"$stamp"
+  ' _ "$ROOT" "$STAMP" "$RELEASE" "$VERSION" >/dev/null 2>&1 &
 else
-  : >"$STAMP"
+  printf '%s' "$VERSION" >"$STAMP"
 fi
 
 # Say something only when the user has to act. SessionStart output becomes

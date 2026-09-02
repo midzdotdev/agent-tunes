@@ -104,7 +104,20 @@ OFFS=$(grep -o 'offset=[0-9]*' "$D"/state/agent-tunes.log | sort -u | wc -l | tr
 STARTS=$(grep -c 'playing pid=' "$D"/state/agent-tunes.log)
 chk "every start used a distinct offset" "$OFFS" "$STARTS"
 
-echo "== 8. leaves nothing behind =="
+echo "== 8. a notification does not steal the speakers =="
+# systemsoundserverd holds output "running" for seconds after a half-second
+# chime, so this used to stop the music every time.
+$T play >/dev/null 2>&1; sleep 5
+P=$(cat "$D"/state/player.pid 2>/dev/null)
+if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
+  osascript -e 'display notification "test" with title "agent-tunes" sound name "Ping"' >/dev/null 2>&1
+  sleep 3
+  chk "music survives a notification" "$(kill -0 "$P" 2>/dev/null && echo alive || echo gone)" "alive"
+else
+  bad "music survives a notification (could not start playback)"
+fi
+
+echo "== 9. leaves nothing behind =="
 cleanup
 chk "no stray players or guards" "$(pgrep -f 'mpv|ffplay|audio-watch' | wc -l | tr -d ' ')" "0"
 chk "no stale locks" "$(ls -d "$D"/state/pending.lock "$D"/state/mpv.sock 2>/dev/null | wc -l | tr -d ' ')" "0"

@@ -33,6 +33,8 @@ TUNES_FADE_OUT=1.5       # fade-out length in seconds when a turn ends
 TUNES_MIN_TAIL=300       # never start within this many seconds of the end
 TUNES_RESPECT_OTHER_AUDIO=1
 TUNES_YIELD_TO_OTHER_AUDIO=1  # stop at once (no fade) if another process starts audio
+TUNES_YIELD_SUSTAIN=1    # seconds the other audio must last before we yield to it
+TUNES_IGNORE_PROCESSES="systemsoundserverd"  # never yield to these, whatever they play
 TUNES_TRACK=""           # empty = first file in audio/
 # shellcheck source=/dev/null
 [ -f "$CONF" ] && . "$CONF"
@@ -97,7 +99,7 @@ other_audio_playing() {
   ours="$(player_pid || true)"
   if [ -x "$WATCHER" ]; then
     local rc=0
-    "$WATCHER" --once ${ours:+"$ours"} >/dev/null 2>&1 || rc=$?
+    "$WATCHER" --once --ignore-names "$TUNES_IGNORE_PROCESSES" ${ours:+"$ours"} >/dev/null 2>&1 || rc=$?
     case "$rc" in
       0) return 0 ;;  # something else is playing
       1) return 1 ;;  # definitely nothing else
@@ -224,7 +226,7 @@ cmd_launch() {  # internal: sleep, re-check, then play
 cmd_guard() {
   local pid="$1" out rc=0
   [ -x "$WATCHER" ] || return 0
-  out="$("$WATCHER" "$pid" 2>/dev/null)" || rc=$?
+  out="$("$WATCHER" --sustain "$TUNES_YIELD_SUSTAIN" --ignore-names "$TUNES_IGNORE_PROCESSES" "$pid" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] || return 0                       # 4 = player already gone
   [ "$(player_pid || true)" = "$pid" ] || return 0   # a newer player owns the slot
   log "yielding: $out"
@@ -267,7 +269,7 @@ cmd_status() {
   echo "  sessions   : $(active_count) working [$(ls "$ACTIVE" 2>/dev/null | sed 's/^k-//' | tr '\n' ' ')]"
   echo "  volume     : $TUNES_VOLUME/100, start delay ${TUNES_START_DELAY}s"
   echo "  fades      : in ${TUNES_FADE_IN}s, out ${TUNES_FADE_OUT}s"
-  echo "  yields     : $([ "$TUNES_YIELD_TO_OTHER_AUDIO" = "1" ] && echo "yes, immediately and without fade" || echo no)"
+  echo "  yields     : $([ "$TUNES_YIELD_TO_OTHER_AUDIO" = "1" ] && echo "yes, without fade, after ${TUNES_YIELD_SUSTAIN}s of other audio" || echo no)"
 }
 
 cmd_play() {  # manual: ignore the work-tracking, respect the audio-busy rule

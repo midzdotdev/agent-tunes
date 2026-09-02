@@ -1,7 +1,14 @@
 {
   "name": "agent-tunes",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Background music while Claude Code works. Starts from a random position, and only when nothing else on the machine is playing audio.",
-  "author": { "name": "James Middleton" },
-  "keywords": ["audio", "music", "hooks", "focus"]
+  "author": {
+    "name": "James Middleton"
+  },
+  "keywords": [
+    "audio",
+    "music",
+    "hooks",
+    "focus"
+  ]
 }

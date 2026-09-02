@@ -68,8 +68,17 @@ fi
 
 # ------------------------------------------------------------ audio checker --
 step "Getting the audio checker"
-mkdir -p "$ROOT/libexec"
+mkdir -p "$ROOT/libexec" "$DATA"
 usable() { [ -x "$1" ] && { "$1" --once >/dev/null 2>&1; [ $? -le 3 ]; }; }
+
+VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "$ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1)"
+VERSION="${VERSION:-unknown}"
+# A new version ships a new checker, so an older one has to go rather than be
+# kept just because it still runs.
+if [ "$(cat "$DATA/.setup-done" 2>/dev/null)" != "$VERSION" ]; then
+  rm -f "$ROOT/libexec/audio-watch"
+fi
 
 if usable "$ROOT/libexec/audio-watch"; then
   say "already present"
@@ -100,7 +109,7 @@ else
   cp "$ROOT/config.example.env" "$DATA/config.env"
   say "copied config.example.env to $DATA/config.env"
 fi
-: >"$DATA/.setup-done"
+printf '%s' "$VERSION" >"$DATA/.setup-done"
 
 # ----------------------------------------------------------------- linking ---
 step "Linking"
