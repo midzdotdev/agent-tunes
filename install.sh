@@ -18,7 +18,8 @@ step() { printf '\n%s\n' "$*"; }
 warn() { printf '  !  %s\n' "$*"; }
 ask()  { # ask <prompt> <variable>; leaves the variable empty when there is no terminal
   printf '  %s' "$1"
-  if [ -r /dev/tty ]; then read -r "$2" </dev/tty || eval "$2="; else eval "$2="; printf '\n'; fi
+  # stderr is redirected before stdin, so a missing /dev/tty fails quietly.
+  if read -r "$2" 2>/dev/null </dev/tty; then :; else eval "$2="; printf '\n'; fi
 }
 
 if [ "$(uname -s)" != "Darwin" ]; then
