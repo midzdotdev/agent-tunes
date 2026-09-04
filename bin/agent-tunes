@@ -303,7 +303,7 @@ cmd_doctor() {
   chk "audio-watch works"  "\"$WATCHER\" --once >/dev/null 2>&1; [ \$? -ne 3 ]"
   chk "mpv-fade present"   "[ -x \"$FADER\" ]"
   chk "track present"      "[ -f \"$(track)\" ]"
-  chk "Pi extension link"  "[ -L \"$HOME/.pi/agent/extensions/agent-tunes.ts\" ]"
+  chk "extension linked"   "ls $HOME/.pi/agent/extensions/agent-tunes.ts $HOME/.omp/agent/extensions/agent-tunes.ts 2>/dev/null | grep -q ."
   chk "claude plugin registered" "[ \"\$(claude plugin list 2>/dev/null | grep -c agent-tunes)\" -gt 0 ]"
   chk "agent-tunes on PATH" "command -v agent-tunes"
   return $ok

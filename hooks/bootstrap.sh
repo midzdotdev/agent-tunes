@@ -42,11 +42,14 @@ if [ ! -e "$HOME/.local/bin/agent-tunes" ]; then
   ln -sfn "$ROOT/bin/agent-tunes" "$HOME/.local/bin/agent-tunes" 2>/dev/null
 fi
 
-# Wire up Pi too, if it is installed.
-if [ -d "$HOME/.pi/agent" ] && [ ! -e "$HOME/.pi/agent/extensions/agent-tunes.ts" ]; then
-  mkdir -p "$HOME/.pi/agent/extensions" 2>/dev/null
-  ln -sfn "$ROOT/pi/agent-tunes.ts" "$HOME/.pi/agent/extensions/agent-tunes.ts" 2>/dev/null
-fi
+# Wire up any Pi-based harness that is installed. The extension file is the
+# same for all of them, so they are treated identically.
+for d in ${AGENT_TUNES_AGENT_DIRS:-"$HOME/.pi/agent" "$HOME/.omp/agent"}; do
+  [ -d "$d" ] || continue
+  [ -e "$d/extensions/agent-tunes.ts" ] && continue
+  mkdir -p "$d/extensions" 2>/dev/null
+  ln -sfn "$ROOT/pi/agent-tunes.ts" "$d/extensions/agent-tunes.ts" 2>/dev/null
+done
 
 # Fetch or build the audio checker in the background, then record that we are done.
 if [ ! -x "$ROOT/libexec/audio-watch" ]; then

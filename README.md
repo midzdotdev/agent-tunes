@@ -211,7 +211,8 @@ and falls back to macOS power assertions if that isn't available either.
 agent-tunes off
 claude plugin uninstall agent-tunes@agent-tunes
 claude plugin marketplace remove agent-tunes
-rm -f ~/.pi/agent/extensions/agent-tunes.ts ~/.local/bin/agent-tunes
+rm -f ~/.pi/agent/extensions/agent-tunes.ts ~/.omp/agent/extensions/agent-tunes.ts \
+      ~/.local/bin/agent-tunes
 ```
 
 Then delete `~/.agent-tunes` for your music and settings, and the clone if you

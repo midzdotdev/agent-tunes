@@ -12,6 +12,8 @@ REPO="https://github.com/midzdotdev/agent-tunes.git"
 RELEASE="https://github.com/midzdotdev/agent-tunes/releases/latest/download/audio-watch"
 DATA="${AGENT_TUNES_HOME:-$HOME/.agent-tunes}"
 BINDIR="$HOME/.local/bin"
+# Agent directories of Pi-based harnesses, checked in order.
+AGENT_DIRS="${AGENT_TUNES_AGENT_DIRS:-$HOME/.pi/agent $HOME/.omp/agent}"
 
 say()  { printf '  %s\n' "$*"; }
 step() { printf '\n%s\n' "$*"; }
@@ -133,12 +135,24 @@ else
   say "Claude Code not found, skipping"
 fi
 
-if [ -d "$HOME/.pi/agent" ] || command -v pi >/dev/null; then
-  mkdir -p "$HOME/.pi/agent/extensions"
-  ln -sfn "$ROOT/pi/agent-tunes.ts" "$HOME/.pi/agent/extensions/agent-tunes.ts"
-  say "Pi extension linked"
-else
-  say "Pi not found, skipping"
+# A Pi extension lives in the harness's agent directory. Link into every one
+# present: the file is identical for all of them, so none is a special case.
+linked=0
+for d in $AGENT_DIRS; do
+  [ -d "$d" ] || continue
+  mkdir -p "$d/extensions"
+  ln -sfn "$ROOT/pi/agent-tunes.ts" "$d/extensions/agent-tunes.ts"
+  say "extension linked into ${d/#$HOME/~}/extensions"
+  linked=$((linked + 1))
+done
+if [ "$linked" -eq 0 ]; then
+  if command -v pi >/dev/null; then
+    mkdir -p "$HOME/.pi/agent/extensions"
+    ln -sfn "$ROOT/pi/agent-tunes.ts" "$HOME/.pi/agent/extensions/agent-tunes.ts"
+    say "extension linked into ~/.pi/agent/extensions"
+  else
+    say "no agent directory found, skipping"
+  fi
 fi
 
 # ------------------------------------------------------------------ a track --
