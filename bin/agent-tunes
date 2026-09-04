@@ -44,8 +44,13 @@ mkdir -p "$STATE" "$ACTIVE" "$AUDIO_DIR"
 PIDFILE="$STATE/player.pid"
 LOG="$STATE/agent-tunes.log"
 IPC="$STATE/mpv.sock"
-WATCHER="$ROOT/libexec/audio-watch"
-FADER="$ROOT/libexec/mpv-fade"
+
+# The external commands are overridable so the test suite can substitute silent
+# stubs. Nothing but the tests should ever set these.
+WATCHER="${TUNES_WATCHER:-$ROOT/libexec/audio-watch}"
+FADER="${TUNES_FADER:-$ROOT/libexec/mpv-fade}"
+PLAYER="${TUNES_PLAYER:-mpv}"
+FFPROBE="${TUNES_FFPROBE:-ffprobe}"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || :; }
 
@@ -68,7 +73,7 @@ duration() {  # seconds, integer, cached per track mtime
   cache="$STATE/duration.$stamp"
   if [ -s "$cache" ]; then cat "$cache"; return; fi
   local d
-  d="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$t" 2>/dev/null)"
+  d="$("$FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$t" 2>/dev/null)"
   d="${d%%.*}"
   [ -z "$d" ] && d=0
   rm -f "$STATE"/duration.* 2>/dev/null
@@ -190,10 +195,10 @@ cmd_launch() {  # internal: sleep, re-check, then play
   off="$(awk -v n="$max" 'BEGIN{srand();print int(rand()*n)}')"
 
   rm -f "$IPC"
-  if command -v mpv >/dev/null; then
+  if command -v "$PLAYER" >/dev/null; then
     # mpv rather than ffplay: its IPC socket is what makes a fade-out possible,
     # since volume can be changed while it plays.
-    nohup mpv --no-video --no-terminal --really-quiet --no-config \
+    nohup "$PLAYER" --no-video --no-terminal --really-quiet --no-config \
       --start="$off" --volume=0 \
       --input-ipc-server="$IPC" \
       "$t" >/dev/null 2>&1 &
@@ -296,8 +301,8 @@ cmd_doctor() {
   local ok=0
   chk() { if eval "$2" >/dev/null 2>&1; then echo "  ok    $1"; else echo "  FAIL  $1"; ok=1; fi; }
   echo "agent-tunes doctor"
-  chk "mpv installed"      "command -v mpv"
-  chk "ffprobe installed"  "command -v ffprobe"
+  chk "player installed"   "command -v \"$PLAYER\""
+  chk "ffprobe installed"  "command -v \"$FFPROBE\""
   chk "yt-dlp installed"   "command -v yt-dlp"
   chk "audio-watch built"  "[ -x \"$WATCHER\" ]"
   chk "audio-watch works"  "\"$WATCHER\" --once >/dev/null 2>&1; [ \$? -ne 3 ]"

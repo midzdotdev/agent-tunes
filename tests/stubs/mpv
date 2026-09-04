@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Silent stand-in for mpv. Records how it was invoked, creates the IPC socket
+# the real one would, and stays alive until killed so that process-liveness
+# checks behave the same. Makes no sound.
+set -u
+: "${TUNES_TEST_DIR:?stub requires TUNES_TEST_DIR}"
+printf '%s\n' "$*" >>"$TUNES_TEST_DIR/player-args"
+: >"$TUNES_TEST_DIR/playing"
+sock=""
+for a in "$@"; do case "$a" in --input-ipc-server=*) sock="${a#*=}" ;; esac; done
+if [ -n "$sock" ]; then
+  python3 - "$sock" <<'PY' 2>/dev/null
+import os, socket, sys
+p = sys.argv[1]
+try:
+    os.unlink(p)
+except OSError:
+    pass
+s = socket.socket(socket.AF_UNIX)
+s.bind(p)
+s.listen(1)
+PY
+fi
+cleanup() { rm -f "$TUNES_TEST_DIR/playing"; exit 0; }
+trap cleanup TERM INT
+while :; do sleep 0.2; done

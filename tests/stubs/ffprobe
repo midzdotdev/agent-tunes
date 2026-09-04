@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stand-in for ffprobe: a fixed duration, so the random-offset maths has
+# something to work with without needing a real media file.
+echo "3600.000000"

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Silent stand-in for the volume ramp. Records the ramp it was asked to perform.
+# The real one only ends the player when told to quit at the bottom of the ramp,
+# and it is also used for the fade in, so killing unconditionally would stop the
+# music the instant it started.
+set -u
+: "${TUNES_TEST_DIR:?stub requires TUNES_TEST_DIR}"
+printf '%s\n' "$*" >>"$TUNES_TEST_DIR/fade-args"
+case " $* " in
+  *" --quit "*)
+    state="$(dirname "${1:-}")"
+    pid="$(cat "$state/player.pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null
+    ;;
+esac
+exit 0

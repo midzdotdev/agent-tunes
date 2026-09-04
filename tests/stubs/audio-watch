@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Stand-in for the CoreAudio checker. Whether something else is playing is read
+# from a file the test controls, so it needs no audio hardware and no macOS.
+#
+#   --once   exit 0 and print BUSY when the flag file exists, else exit 1
+#   default  block until the flag appears (exit 0), or until the guarded
+#            process goes away (exit 4)
+set -u
+: "${TUNES_TEST_DIR:?stub requires TUNES_TEST_DIR}"
+FLAG="$TUNES_TEST_DIR/other-audio"
+once=0; guarded=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --once) once=1 ;;
+    --sustain|--interval|--ignore-names) shift ;;
+    --*) : ;;
+    *) [ -z "$guarded" ] && guarded="$1" ;;
+  esac
+  shift
+done
+if [ "$once" = "1" ]; then
+  [ -f "$FLAG" ] && { echo "BUSY 4242"; exit 0; }
+  exit 1
+fi
+while :; do
+  [ -f "$FLAG" ] && { echo "BUSY 4242"; exit 0; }
+  [ -n "$guarded" ] && ! kill -0 "$guarded" 2>/dev/null && exit 4
+  sleep 0.1
+done

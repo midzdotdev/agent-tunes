@@ -186,13 +186,24 @@ ramp. The fade in runs the same code in reverse.
 ## Tests
 
 ```bash
-tests/suite.sh
+tests/unit.sh            # silent, about 30 seconds
+tests/docker.sh          # the same suite on Linux, in a container
+tests/audible.sh --yes   # plays music out loud, macOS only
 ```
 
-25 checks over the switch, multi-agent counting, the fade ramp, yielding,
-notification immunity, start suppression, random offsets, the Pi extension
-loading, and cleanup. It plays
-audio out loud and takes about a minute.
+`tests/unit.sh` covers the switch, the start delay, multi-agent counting, the
+fade, yielding, random positions and cleanup. Every external command is replaced
+by a stub, so it makes no sound, needs no audio hardware, and cannot be thrown
+off by whatever else is using your speakers. That last part matters more than it
+sounds: getting out of the way of other audio is the whole point, so a test that
+listens to real speakers fails whenever you use your own machine.
+
+`tests/docker.sh` runs that same suite on Linux, which also shows the
+orchestration has no hidden dependency on macOS.
+
+`tests/audible.sh` holds only what cannot be faked: the CoreAudio checker
+against real audio clients, mpv's real volume ramp, and yielding to a real
+second player. It refuses to run without `--yes`.
 
 ## What you need
 
