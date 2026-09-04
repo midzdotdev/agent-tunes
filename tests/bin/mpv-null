@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Real mpv, with its null audio output. It decodes, keeps its clock, and serves
+# the IPC socket exactly as it would when playing, but opens no audio device, so
+# it makes no sound and does not register as an audio client. That lets the real
+# player and the real volume ramp be tested anywhere, including in a container.
+exec mpv --ao=null "$@"

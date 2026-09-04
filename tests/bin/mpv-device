@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Real mpv pinned to a named audio device. Point it at a virtual device such as
+# BlackHole and the music becomes inaudible while still being real output, so
+# the CoreAudio checker sees it exactly as it sees anything else.
+exec mpv --audio-device="${TUNES_TEST_AUDIO_DEVICE:?set TUNES_TEST_AUDIO_DEVICE}" "$@"

@@ -186,24 +186,44 @@ ramp. The fade in runs the same code in reverse.
 ## Tests
 
 ```bash
-tests/unit.sh            # silent, about 30 seconds
-tests/docker.sh          # the same suite on Linux, in a container
-tests/audible.sh --yes   # plays music out loud, macOS only
+tests/unit.sh            # silent, stubs, ~30s
+tests/integration.sh     # silent, real mpv and real fade
+tests/docker.sh          # both of the above, on Linux
+tests/audible.sh --yes   # plays out loud, macOS only
 ```
 
-`tests/unit.sh` covers the switch, the start delay, multi-agent counting, the
-fade, yielding, random positions and cleanup. Every external command is replaced
-by a stub, so it makes no sound, needs no audio hardware, and cannot be thrown
-off by whatever else is using your speakers. That last part matters more than it
-sounds: getting out of the way of other audio is the whole point, so a test that
-listens to real speakers fails whenever you use your own machine.
+Three tiers, and only the last one makes a sound.
 
-`tests/docker.sh` runs that same suite on Linux, which also shows the
-orchestration has no hidden dependency on macOS.
+`tests/unit.sh` replaces every external command with a stub, so it covers the
+switch, the start delay, multi-agent counting, yielding, random positions and
+cleanup without touching audio at all. It runs against a throwaway data
+directory, so a real agent session on the same machine cannot skew the counts.
+That matters more than it sounds: getting out of the way of other audio is the
+whole point, so a suite that listens to real speakers fails whenever you use
+your own machine.
+
+`tests/integration.sh` runs the real mpv and the real volume ramp, using mpv's
+null audio output. It opens no audio device, so it makes no sound and does not
+register as an audio client, while still exercising the IPC socket, the ramp,
+quitting at the bottom of it, and seeking to the chosen position.
+
+`tests/docker.sh` runs both on Linux, which also shows the orchestration has no
+hidden dependency on macOS.
 
 `tests/audible.sh` holds only what cannot be faked: the CoreAudio checker
-against real audio clients, mpv's real volume ramp, and yielding to a real
-second player. It refuses to run without `--yes`.
+against real audio clients, and yielding to a real second player. It refuses to
+run without `--yes`, and puts your on/off setting back afterwards.
+
+Most of it can be silenced with a virtual audio device, which is real output as
+far as CoreAudio is concerned but inaudible:
+
+```bash
+brew install blackhole-2ch
+tests/audible.sh --yes --device 'coreaudio/BlackHole2ch'
+```
+
+`mpv --audio-device=help` lists what your machine has. System alert sounds still
+go to the default device, so the notification case stays audible either way.
 
 ## What you need
 
