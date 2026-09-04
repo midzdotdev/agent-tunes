@@ -9,10 +9,39 @@
  * Setup symlinks this into ~/.pi/agent/extensions/, where Pi discovers it.
  */
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const CLI = join(homedir(), ".agent-tunes", "bin", "agent-tunes");
+/**
+ * Find the agent-tunes command.
+ *
+ * Alongside the checkout first, since this file ships next to it and that holds
+ * however the extension was installed: a symlink into an agent directory, or a
+ * package install. ~/.agent-tunes is deliberately not consulted: that is the
+ * data directory, and it holds no executables.
+ */
+function findCli(): string {
+  const candidates: string[] = [];
+  try {
+    candidates.push(join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "agent-tunes"));
+  } catch {
+    /* no import.meta in this loader; the paths below still apply */
+  }
+  candidates.push(join(homedir(), ".local", "bin", "agent-tunes"));
+  candidates.push(join(homedir(), "agent-tunes", "bin", "agent-tunes"));
+  for (const c of candidates) {
+    try {
+      if (existsSync(c)) return c;
+    } catch {
+      /* unreadable candidate, try the next */
+    }
+  }
+  return "agent-tunes"; // last resort: whatever is on PATH
+}
+
+const CLI = findCli();
 const KEY = `pi-${process.pid}`;
 
 /** Minimal structural types. Pi injects the real ExtensionAPI at load. */

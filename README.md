@@ -55,6 +55,10 @@ That takes anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) understands, whic
 covers most audio and video sites plus plain file links. You can also drop a file
 into `~/.agent-tunes/audio/`. Use music you have the right to play.
 
+The repo is also a Pi package, so `pi install <url>` wires up the extension on
+its own. That covers the extension and nothing else, with no mpv, no audio
+checker, no command and no music, so the setup script above is still the way in.
+
 ## Turning it off
 
 ```bash
