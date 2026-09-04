@@ -117,7 +117,19 @@ else
   bad "music survives a notification (could not start playback)"
 fi
 
-echo "== 9. leaves nothing behind =="
+echo "== 9. the Pi extension loads =="
+# setLabel is a runtime action in Pi, so calling it during load throws and the
+# whole extension is rejected. Loading happens before any model call, so this
+# needs no credentials.
+if command -v pi >/dev/null; then
+  err=$(timeout 90 pi -e "$PWD/pi/agent-tunes.ts" -p "hi" </dev/null 2>&1 \
+        | grep -ci "failed to load extension" | tr -d ' ')
+  chk "Pi loads the extension without error" "$err" "0"
+else
+  echo "  SKIP  Pi loads the extension (pi not installed)"
+fi
+
+echo "== 10. leaves nothing behind =="
 cleanup
 chk "no stray players or guards" "$(pgrep -f 'mpv|ffplay|audio-watch' | wc -l | tr -d ' ')" "0"
 chk "no stale locks" "$(ls -d "$D"/state/pending.lock "$D"/state/mpv.sock 2>/dev/null | wc -l | tr -d ' ')" "0"

@@ -6,7 +6,7 @@
 
 [![macOS](https://img.shields.io/badge/macOS-14.4%2B-black?logo=apple)](https://www.apple.com/macos/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](https://claude.com/claude-code)
-[![omp](https://img.shields.io/badge/omp-extension-6366f1)](https://omp.sh)
+[![Pi](https://img.shields.io/badge/Pi-extension-6366f1)](https://github.com/earendil-works/pi)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 </div>
@@ -19,7 +19,7 @@ It plays only when nothing else on your Mac is making a sound, so it never talks
 over a call, a video, or whatever you already had on.
 
 Works with [Claude Code](https://claude.com/claude-code) and
-[omp](https://omp.sh), together or separately.
+[Pi](https://github.com/earendil-works/pi), together or separately.
 
 ## Install
 
@@ -34,7 +34,7 @@ The plugin finishes setting itself up on the next session start, and Claude Code
 picks it up without a restart. It will tell you if it needs anything, which on a
 machine without [mpv](https://mpv.io) means `brew install mpv`.
 
-For omp, or if you would rather see what you're running first:
+For Pi, or if you would rather see what you're running first:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/midzdotdev/agent-tunes/main/install.sh | bash
@@ -104,7 +104,7 @@ music gets out of its way, which filters brief noises from short-lived processes
 
 ## Several agents at once
 
-Two Claude Code windows, or Claude Code and omp together, share one player.
+Two Claude Code windows, or Claude Code and Pi together, share one player.
 
 ```
 A starts work   ->  music starts
@@ -150,13 +150,13 @@ agent-tunes build             # rebuild the audio checker after editing src/
 
 ## How it works
 
-Everything lives in one bash script. The Claude Code plugin and the omp extension
+Everything lives in one bash script. The Claude Code plugin and the Pi extension
 are thin wrappers that call it, so the two can't drift apart.
 
 | | Starts on | Stops on |
 | --- | --- | --- |
 | Claude Code | `UserPromptSubmit`, `PreToolUse` | `Stop`, `SessionEnd` |
-| omp | `agent_start` | `agent_end`, `session_shutdown` |
+| Pi | `agent_start` | `agent_end`, `session_shutdown` |
 
 **Telling whether anything else is playing.** CoreAudio has had a process-object
 API since macOS 14.4. Every audio client shows up as an object with a PID and an
@@ -185,8 +185,9 @@ ramp. The fade in runs the same code in reverse.
 tests/suite.sh
 ```
 
-24 checks over the switch, multi-agent counting, the fade ramp, yielding,
-notification immunity, start suppression, random offsets and cleanup. It plays
+25 checks over the switch, multi-agent counting, the fade ramp, yielding,
+notification immunity, start suppression, random offsets, the Pi extension
+loading, and cleanup. It plays
 audio out loud and takes about a minute.
 
 ## What you need
@@ -210,7 +211,7 @@ and falls back to macOS power assertions if that isn't available either.
 agent-tunes off
 claude plugin uninstall agent-tunes@agent-tunes
 claude plugin marketplace remove agent-tunes
-rm -f ~/.omp/agent/extensions/agent-tunes.ts ~/.local/bin/agent-tunes
+rm -f ~/.pi/agent/extensions/agent-tunes.ts ~/.local/bin/agent-tunes
 ```
 
 Then delete `~/.agent-tunes` for your music and settings, and the clone if you

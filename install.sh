@@ -133,12 +133,12 @@ else
   say "Claude Code not found, skipping"
 fi
 
-if [ -d "$HOME/.omp/agent" ]; then
-  mkdir -p "$HOME/.omp/agent/extensions"
-  ln -sfn "$ROOT/omp/agent-tunes.ts" "$HOME/.omp/agent/extensions/agent-tunes.ts"
-  say "omp extension linked"
+if [ -d "$HOME/.pi/agent" ] || command -v pi >/dev/null; then
+  mkdir -p "$HOME/.pi/agent/extensions"
+  ln -sfn "$ROOT/pi/agent-tunes.ts" "$HOME/.pi/agent/extensions/agent-tunes.ts"
+  say "Pi extension linked"
 else
-  say "omp not found, skipping"
+  say "Pi not found, skipping"
 fi
 
 # ------------------------------------------------------------------ a track --

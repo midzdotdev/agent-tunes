@@ -1,21 +1,21 @@
 /**
- * agent-tunes: the omp extension.
+ * agent-tunes: a Pi extension.
  *
- * Signals work start/stop to ~/agent-tunes/bin/agent-tunes, which owns all the
- * behaviour (random start position, the "only when nothing else is playing"
- * rule, the on/off switch). This file is deliberately thin so that the Claude
- * Code plugin and omp cannot drift apart.
+ * Signals work start and stop to ~/.agent-tunes/bin/agent-tunes, which owns all
+ * the behaviour: the random start position, the "only when nothing else is
+ * playing" rule, and the on/off switch. Kept deliberately thin so the Claude
+ * Code plugin and this cannot drift apart.
  *
- * install.sh symlinks this into ~/.omp/agent/extensions/ so omp finds it.
+ * Setup symlinks this into ~/.pi/agent/extensions/, where Pi discovers it.
  */
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const CLI = join(homedir(), ".agent-tunes", "bin", "agent-tunes");
-const KEY = `omp-${process.pid}`;
+const KEY = `pi-${process.pid}`;
 
-/** Minimal structural types. omp injects the real ExtensionAPI at load. */
+/** Minimal structural types. Pi injects the real ExtensionAPI at load. */
 interface Ctx {
   ui: { notify(msg: string, level?: string): void };
 }
@@ -40,7 +40,15 @@ function run(args: string[]): Promise<string> {
 let depth = 0;
 
 export default function (pi: Api): void {
-  pi.setLabel?.("Agent Tunes");
+  // setLabel is a runtime action rather than a registration call, so calling it
+  // while the extension is still loading throws. Defer it to session start.
+  pi.on("session_start", () => {
+    try {
+      pi.setLabel?.("Agent Tunes");
+    } catch {
+      /* labelling is cosmetic, so never let it break the session */
+    }
+  });
 
   pi.on("agent_start", () => {
     if (depth++ === 0) void run(["start", "--key", KEY]);

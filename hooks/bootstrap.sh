@@ -42,10 +42,10 @@ if [ ! -e "$HOME/.local/bin/agent-tunes" ]; then
   ln -sfn "$ROOT/bin/agent-tunes" "$HOME/.local/bin/agent-tunes" 2>/dev/null
 fi
 
-# Wire up omp too, if it is installed.
-if [ -d "$HOME/.omp/agent" ] && [ ! -e "$HOME/.omp/agent/extensions/agent-tunes.ts" ]; then
-  mkdir -p "$HOME/.omp/agent/extensions" 2>/dev/null
-  ln -sfn "$ROOT/omp/agent-tunes.ts" "$HOME/.omp/agent/extensions/agent-tunes.ts" 2>/dev/null
+# Wire up Pi too, if it is installed.
+if [ -d "$HOME/.pi/agent" ] && [ ! -e "$HOME/.pi/agent/extensions/agent-tunes.ts" ]; then
+  mkdir -p "$HOME/.pi/agent/extensions" 2>/dev/null
+  ln -sfn "$ROOT/pi/agent-tunes.ts" "$HOME/.pi/agent/extensions/agent-tunes.ts" 2>/dev/null
 fi
 
 # Fetch or build the audio checker in the background, then record that we are done.

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # agent-tunes: background music while a coding agent is working.
 #
-# One implementation, two front-ends: a Claude Code plugin (hooks.json) and an
-# omp extension (omp/agent-tunes.ts). Both shell out to this script, so the
+# One implementation, two front-ends: a Claude Code plugin (hooks.json) and
+# a Pi extension (pi/agent-tunes.ts). Both shell out to this script, so the
 # behaviour lives in exactly one place.
 #
 # Rules:
@@ -116,7 +116,7 @@ other_audio_playing() {
 
 active_count() { find "$ACTIVE" -type f 2>/dev/null | wc -l | tr -d ' '; }
 
-# Session key: Claude Code hooks deliver JSON on stdin, omp passes --key.
+# Session key: Claude Code hooks deliver JSON on stdin, the Pi extension passes --key.
 resolve_key() {
   local explicit="${1:-}"
   if [ -n "$explicit" ]; then printf 'k-%s' "$(printf '%s' "$explicit" | tr -c 'A-Za-z0-9_.-' '_')"; return; fi
@@ -303,7 +303,7 @@ cmd_doctor() {
   chk "audio-watch works"  "\"$WATCHER\" --once >/dev/null 2>&1; [ \$? -ne 3 ]"
   chk "mpv-fade present"   "[ -x \"$FADER\" ]"
   chk "track present"      "[ -f \"$(track)\" ]"
-  chk "omp extension link" "[ -L \"$HOME/.omp/agent/extensions/agent-tunes.ts\" ]"
+  chk "Pi extension link"  "[ -L \"$HOME/.pi/agent/extensions/agent-tunes.ts\" ]"
   chk "claude plugin registered" "[ \"\$(claude plugin list 2>/dev/null | grep -c agent-tunes)\" -gt 0 ]"
   chk "agent-tunes on PATH" "command -v agent-tunes"
   return $ok
