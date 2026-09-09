@@ -1,6 +1,6 @@
 {
   "name": "agent-tunes",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Background music while your coding agent works, from a random position, and only when nothing else on your Mac is playing audio.",
   "license": "MIT",
   "homepage": "https://github.com/midzdotdev/agent-tunes#readme",
