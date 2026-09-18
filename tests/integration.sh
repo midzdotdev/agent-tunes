@@ -18,7 +18,6 @@ T="$ROOT/bin/agent-tunes"
 
 command -v mpv     >/dev/null || { echo "SKIP: mpv is not installed";     exit 0; }
 command -v ffmpeg  >/dev/null || { echo "SKIP: ffmpeg is not installed";  exit 0; }
-command -v ffprobe >/dev/null || { echo "SKIP: ffprobe is not installed"; exit 0; }
 
 TMP="$(mktemp -d)"
 export AGENT_TUNES_HOME="$TMP/data"
@@ -28,8 +27,9 @@ export TUNES_FADER="$ROOT/libexec/mpv-fade"      # the real volume ramp
 export TUNES_WATCHER="$ROOT/tests/stubs/audio-watch"
 mkdir -p "$AGENT_TUNES_HOME/audio" "$AGENT_TUNES_HOME/state" "$TUNES_TEST_DIR"
 
-# A real file, so the real ffprobe has something real to measure.
-ffmpeg -f lavfi -i "sine=frequency=440:duration=600" -c:a aac -y \
+# A real file of a known length, which is the oracle the duration check uses.
+TONE_SECONDS=600
+ffmpeg -f lavfi -i "sine=frequency=440:duration=$TONE_SECONDS" -c:a aac -y \
   "$AGENT_TUNES_HOME/audio/tone.m4a" >/dev/null 2>&1
 
 cat >"$AGENT_TUNES_HOME/config.env" <<'CONF'
@@ -41,12 +41,11 @@ TUNES_MIN_TAIL=120
 TUNES_RESPECT_OTHER_AUDIO=1
 TUNES_YIELD_TO_OTHER_AUDIO=1
 TUNES_YIELD_SUSTAIN=0.2
-TUNES_TRACK=""
 CONF
 
 D="$AGENT_TUNES_HOME"
 LOG="$D/state/agent-tunes.log"
-trap '"$T" stop-all >/dev/null 2>&1; rm -rf "$TMP"' EXIT
+trap '"$T" stop --all >/dev/null 2>&1; rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m  %s\n' "$1"; pass=$((pass + 1)); }
@@ -112,11 +111,17 @@ rm -f "$TUNES_TEST_DIR/other-audio"
 "$T" stop --key A >/dev/null
 
 echo "== the real duration is respected =="
-dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$D/audio/tone.m4a" | cut -d. -f1)
-chk "ffprobe read the track" "$([ "${dur:-0}" -ge 590 ] && echo yes || echo "no ($dur)")" "yes"
+# ffmpeg built this tone at exactly TONE_SECONDS, so that constant is the
+# oracle. Checking the logged duration against a floor would only confirm the
+# player agrees with itself; checking it against the length we asked ffmpeg for
+# is what catches a probe that reads the wrong number.
+dur=$(grep -o 'offset=[0-9]*s/[0-9]*s' "$LOG" | tail -1 | sed 's/.*\///; s/s$//')
+chk "the player read the real length" \
+    "$([ "${dur:-0}" -ge $((TONE_SECONDS - 5)) ] && [ "${dur:-0}" -le $((TONE_SECONDS + 5)) ] \
+       && echo yes || echo "no ($dur, wanted $TONE_SECONDS)")" "yes"
 maxoff=$(grep -o 'offset=[0-9]*' "$LOG" | cut -d= -f2 | sort -n | tail -1)
 chk "offset leaves the tail alone" \
-    "$([ "${maxoff:-0}" -le $((dur - 120)) ] && echo yes || echo "no ($maxoff of $dur)")" "yes"
+    "$([ "${maxoff:-0}" -le $((TONE_SECONDS - 120)) ] && echo yes || echo "no ($maxoff of $TONE_SECONDS)")" "yes"
 
 echo
 echo "=================== $pass passed, $fail failed ==================="

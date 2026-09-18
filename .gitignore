@@ -1,5 +1,5 @@
 # Tracks. Large binaries with their own licensing. Fetch your own with
-# `agent-tunes download <url>`.
+# `agent-tunes tracks add <url>`.
 audio/
 
 # Runtime state: enabled flag, pidfile, mpv socket, active sessions, log.

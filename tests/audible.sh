@@ -12,6 +12,15 @@
 # speakers, and it deliberately provokes the "something else is playing" path,
 # so your own audio will interfere with the results and vice versa.
 #
+# It runs against a data directory of its own and a tone it generates, never
+# your real one, and it switches off any agent-tunes install pointed at
+# ~/.agent-tunes for the duration, putting it back afterwards. Both matter: a
+# live agent session's hooks start and stop playback on their own schedule, and
+# they may be a different released version running different code. Sharing a
+# data directory with that produces results nobody can trust.
+#
+# Set AGENT_TUNES_HOME yourself to override, and you own the consequences.
+#
 # --device pins playback to a named audio device. Point it at a virtual one such
 # as BlackHole (brew install blackhole-2ch) and the music is inaudible while
 # still being real output, so the checker sees it as it sees anything else. That
@@ -39,9 +48,51 @@ done
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 T="$ROOT/bin/agent-tunes"
-D="${AGENT_TUNES_HOME:-$HOME/.agent-tunes}"
+
+# Quieten whatever is driving the real data directory, so a live agent session
+# cannot start a player in the middle of a measurement. cmd_start checks the
+# switch before it registers anything, so off is enough, whatever version the
+# hooks are running. Put back by restore().
+REAL_HOME="$HOME/.agent-tunes"
+REAL_WAS=""
+if [ -d "$REAL_HOME" ]; then
+  REAL_WAS="$(AGENT_TUNES_HOME="$REAL_HOME" "$T" status | awk '/state/{print $3}')"
+  if [ "$REAL_WAS" = "on" ]; then
+    AGENT_TUNES_HOME="$REAL_HOME" "$T" off >/dev/null 2>&1
+    echo "  (switched $REAL_HOME off for the duration, it goes back on afterwards)"
+    # CoreAudio keeps reporting a client as running output for seconds after it
+    # stops, so the player we just killed still counts as somebody using the
+    # speakers. Asserting idle before that clears fails the first check and
+    # leaves every later one looking like a broken build.
+    for _i in $(seq 1 60); do
+      [ -x "$ROOT/libexec/audio-watch" ] || break
+      "$ROOT/libexec/audio-watch" --once >/dev/null 2>&1 || break
+      sleep 0.5
+    done
+  fi
+fi
+
+# Our own data directory and our own tone, so nothing here can touch your music
+# and nothing of yours can wander into the results.
+OWN_HOME=""
+if [ -z "${AGENT_TUNES_HOME:-}" ]; then
+  command -v ffmpeg >/dev/null || {
+    echo "ffmpeg is needed to generate the test tone (brew install ffmpeg)," >&2
+    echo "or set AGENT_TUNES_HOME to a directory holding a track." >&2
+    exit 1
+  }
+  OWN_HOME="$(mktemp -d)"
+  export AGENT_TUNES_HOME="$OWN_HOME"
+  mkdir -p "$OWN_HOME/audio"
+  ffmpeg -f lavfi -i "sine=frequency=220:duration=600" -c:a aac -y \
+    "$OWN_HOME/audio/tone.m4a" >/dev/null 2>&1
+  printf 'TUNES_VOLUME=20\n' >"$OWN_HOME/config.env"
+  echo "  (using $OWN_HOME, not your own music)"
+fi
+
+D="$AGENT_TUNES_HOME"
 TRACK="$(find "$D/audio/" -maxdepth 1 -type f 2>/dev/null | sort | head -1)"
-[ -n "$TRACK" ] || { echo "No track in $D/audio. Add one with: agent-tunes download <url>"; exit 1; }
+[ -n "$TRACK" ] || { echo "No track in $D/audio. Add one with: agent-tunes tracks add <url>"; exit 1; }
 WATCH="$ROOT/libexec/audio-watch"
 LOG="$D/state/agent-tunes.log"
 
@@ -59,12 +110,18 @@ pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m  %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=$((fail + 1)); }
 chk() { if [ "$2" = "$3" ]; then ok "$1 ($3)"; else bad "$1 (want '$3', got '$2')"; fi; }
-cleanup() { "$T" stop-all >/dev/null 2>&1; pkill -f "mpv .*$D/audio" 2>/dev/null; sleep 1; }
+cleanup() { "$T" stop --all >/dev/null 2>&1; pkill -f "mpv .*$D/audio" 2>/dev/null; sleep 1; }
 
 # These tests drive playback, so it has to be switched on, and whatever the
 # machine had set before must be put back afterwards.
 WAS="$("$T" status | awk '/state/{print $3}')"
-restore() { cleanup; [ "$WAS" = "off" ] && "$T" off >/dev/null 2>&1; }
+restore() {
+  cleanup
+  [ "$WAS" = "off" ] && "$T" off >/dev/null 2>&1
+  [ -n "$OWN_HOME" ] && rm -rf "$OWN_HOME"
+  [ "$REAL_WAS" = "on" ] && AGENT_TUNES_HOME="$REAL_HOME" "$T" on >/dev/null 2>&1
+  return 0
+}
 
 # CoreAudio keeps reporting a client as running output for seconds after it
 # stops, so a player killed a moment ago still counts as somebody using the
@@ -78,6 +135,22 @@ wait_idle() {
   return 0
 }
 trap restore EXIT
+
+# Anything else using the speakers makes every measurement here meaningless: the
+# first check asserts the machine is idle, and the rest need playback to start,
+# which agent-tunes correctly refuses while somebody else is playing. Refuse up
+# front and name the culprit, rather than reporting four failures that look like
+# a broken build.
+if [ -x "$ROOT/libexec/audio-watch" ]; then
+  if busy_pid="$("$ROOT/libexec/audio-watch" --once 2>/dev/null)"; then
+    busy_pid="${busy_pid#BUSY }"
+    echo "Something is already playing audio, so these tests cannot run:" >&2
+    ps -o pid,comm -p "$busy_pid" 2>/dev/null | tail -1 | sed 's/^/  /' >&2
+    echo "Stop it, or wait for it to finish, and run this again." >&2
+    exit 2
+  fi
+fi
+
 "$T" on >/dev/null
 cleanup
 
@@ -131,7 +204,7 @@ PY
     sleep 0.3
   done &
   sampler=$!
-  "$T" stop-all >/dev/null 2>&1
+  "$T" stop --all >/dev/null 2>&1
   wait $sampler 2>/dev/null
   chk "it faded rather than cutting" "$(grep -c 'mode=fade faded=1' "$LOG")" "1"
 else

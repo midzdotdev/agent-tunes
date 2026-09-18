@@ -48,12 +48,13 @@ again later.
 Then give it something to play, if you skipped that during setup:
 
 ```bash
-agent-tunes download "https://www.youtube.com/watch?v=..."
+agent-tunes tracks add "https://www.youtube.com/watch?v=..."
 ```
 
 That takes anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) understands, which
-covers most audio and video sites plus plain file links. You can also drop a file
-into `~/.agent-tunes/audio/`. Use music you have the right to play.
+covers most audio and video sites plus plain file links. A path works just as
+well, and so does dropping a file into `~/.agent-tunes/audio/` yourself. Use
+music you have the right to play.
 
 The repo is also a Pi package, so `pi install <url>` wires up the extension on
 its own. That covers the extension and nothing else, with no mpv, no audio
@@ -66,25 +67,33 @@ agent-tunes toggle      # or: on, off
 agent-tunes status
 ```
 
-Both agents also have a `/tunes` command that takes the same words.
+Both agents also have a `/tunes` command that takes the same words, plus
+`/tunes tracks` to list what you have. Adding, removing and enabling are left
+out of it on purpose: they change your own music files, so they stay at a
+terminal.
 
 Nothing is left running when it's off. The switch is a file in `~/.agent-tunes/state/`, checked
 before anything else happens.
 
 ## When it plays
 
-Four things have to be true, or it stays quiet:
+Five things have to be true, or it stays quiet:
 
 1. you have it switched on
 2. an agent is actually working
-3. it isn't already playing
-4. nothing else on the Mac is playing audio
+3. at least one of your tracks is enabled
+4. it isn't already playing
+5. nothing else on the Mac is playing audio
 
 There's also a four second delay before the first note. A quick answer finishes
 before any sound arrives, so short turns don't produce a two second blip of jazz.
 
-Playback begins somewhere random in the track, never in the last five minutes of
+It picks one of your enabled tracks at random, begins somewhere random inside
 it, and fades in. When the agent settles, it fades out.
+
+The starting point leaves a tail, so a turn does not run into silence a few
+seconds later. That tail is `TUNES_MIN_TAIL`, five minutes by default, shortened
+to half the track on anything too short to give five minutes away.
 
 ### Getting out of the way
 
@@ -118,6 +127,11 @@ Each session registers itself as a file in `~/.agent-tunes/state/active/`, remov
 finishes. The last one out stops the music. `agent-tunes status` shows who is
 currently registered.
 
+An agent that is killed outright never gets to remove its file. Every session
+refreshes its own registration as it works, so one that has not checked in for
+`TUNES_SESSION_TTL` is treated as gone, and the music stops when the last real
+one does.
+
 ## Settings
 
 Settings live in `~/.agent-tunes/config.env`, which setup creates from
@@ -133,26 +147,61 @@ installed code, so upgrading never touches them.
 | `TUNES_START_DELAY` | `4` | Seconds of work before the music starts |
 | `TUNES_FADE_IN` | `4` | Fade in length |
 | `TUNES_FADE_OUT` | `1.5` | Fade out length |
-| `TUNES_MIN_TAIL` | `300` | Never start this close to the end of a track |
+| `TUNES_MIN_TAIL` | `300` | Never start this close to the end of a track, halved down to fit a short one |
 | `TUNES_RESPECT_OTHER_AUDIO` | `1` | Set to `0` to start even when something else is playing |
 | `TUNES_YIELD_TO_OTHER_AUDIO` | `1` | Set to `0` to keep playing when another app starts |
 | `TUNES_YIELD_SUSTAIN` | `1` | Seconds another app must keep playing before yielding |
 | `TUNES_IGNORE_PROCESSES` | `systemsoundserverd` | Executables that never count, whatever they play |
-| `TUNES_TRACK` | empty | A filename in `audio/`, or an absolute path. Empty picks the first file found |
+| `TUNES_SESSION_TTL` | `1800` | Forget a session that has not checked in for this many seconds |
+| `TUNES_EXTS` | `m4a mp3 opus webm wav flac` | File suffixes that count as a track |
+
+## Your tracks
+
+Everything lives in `~/.agent-tunes/audio/`, and every track in there may play
+unless you say otherwise.
+
+```bash
+agent-tunes tracks                        what you have, and what may play
+agent-tunes tracks add <path|url>         copy a file in, or fetch one with yt-dlp
+agent-tunes tracks remove <name>          delete it, after asking
+agent-tunes tracks enable  <name|--all>   let it play
+agent-tunes tracks disable <name|--all>   keep it, but never play it
+agent-tunes tracks dir                    print where the music is kept
+```
+
+```
+$ agent-tunes tracks
+/Users/you/.agent-tunes/audio
+
+  elevator-jazz.m4a                            3:05:21
+  late-night-lofi.m4a                            48:12
+  drum-and-bass.m4a                              42:30   disabled
+
+  3 tracks, 2 enabled
+```
+
+`<name>` is a filename, or any part of one that matches only a single track, so
+`agent-tunes tracks disable lofi` is enough. Adding a file checks that mpv can
+actually play it and that there is sound in it, so a video with a silent
+soundtrack is turned away rather than quietly playing nothing.
+
+Disabling keeps the file and leaves it out of the shuffle. `--all` covers every
+track at once, and disabling the last one tells you nothing will play.
 
 ## Other commands
 
 ```bash
 agent-tunes play              # start now, without waiting for an agent
-agent-tunes stop-all          # stop now and clear every session
+agent-tunes stop --all        # stop now and clear every session
 agent-tunes doctor            # check the wiring
 ```
 
 ## What you need
 
-macOS 14.4 or later and [mpv](https://mpv.io), which plays the audio. `ffmpeg`
-and `yt-dlp` are only needed by `agent-tunes download`. Setup offers to fetch all
-three through Homebrew.
+macOS 14.4 or later and [mpv](https://mpv.io), which plays the audio and is also
+what checks a new track before it is added. `ffmpeg` and `yt-dlp` are only needed
+by `agent-tunes tracks add` with a URL. Setup offers to fetch all three through
+Homebrew.
 
 You do not need Xcode or any developer tools. Setup downloads `audio-watch`
 prebuilt as a universal binary covering both Apple silicon and Intel. It links

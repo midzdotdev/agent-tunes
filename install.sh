@@ -164,9 +164,9 @@ else
   say "Leave it blank to skip and add one later. Use music you may play."
   ask "link: " url
   if [ -n "${url:-}" ]; then
-    "$ROOT/bin/agent-tunes" download "$url" >/dev/null 2>&1 \
+    "$ROOT/bin/agent-tunes" tracks add "$url" >/dev/null 2>&1 \
       && say "downloaded" \
-      || warn "Download failed. Try again later with: agent-tunes download <url>"
+      || warn "Download failed. Try again later with: agent-tunes tracks add <url>"
   else
     say "skipped"
   fi

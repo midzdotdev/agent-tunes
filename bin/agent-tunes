@@ -8,7 +8,7 @@
 # Rules:
 #   - plays only when enabled (state/enabled)
 #   - plays only when nothing else on the machine is producing audio
-#   - starts from a random position in the track
+#   - picks a random track from the enabled ones, and a random position in it
 #   - waits START_DELAY seconds of continuous work before starting, so short
 #     turns do not produce a two-second blip of jazz
 #   - stops when the last active agent session finishes
@@ -18,11 +18,30 @@ set -uo pipefail
 # Code lives with the checkout. Data lives in the user's home, so that a plugin
 # update, which replaces the installed copy wholesale, cannot take your track,
 # your settings or a running player with it.
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+#
+# The symlink chain has to be walked first. Setup puts ~/.local/bin/agent-tunes
+# on PATH as a link into the checkout, and taking dirname of the link gives
+# ~/.local, where libexec/ does not exist. audio-watch and mpv-fade both hang
+# off ROOT, so every PATH invocation silently lost its fade-out and stopped
+# yielding to other audio. readlink without -f, because BSD only grew -f late.
+SELF="${BASH_SOURCE[0]}"
+_hops=0
+while [ -L "$SELF" ] && [ "$_hops" -lt 40 ]; do
+  _link="$(readlink "$SELF")"
+  case "$_link" in
+    /*) SELF="$_link" ;;
+    *)  SELF="$(dirname -- "$SELF")/$_link" ;;
+  esac
+  _hops=$((_hops + 1))
+done
+ROOT="$(cd -- "$(dirname -- "$SELF")/.." && pwd -P)"
 DATA="${AGENT_TUNES_HOME:-$HOME/.agent-tunes}"
 AUDIO_DIR="$DATA/audio"
 STATE="$DATA/state"
 ACTIVE="$STATE/active"
+# A marker here names a track that may not be played. Absence means playable,
+# so a file dropped into audio/ by hand plays without needing to be registered.
+DISABLED="$STATE/disabled"
 CONF="$DATA/config.env"
 
 # ---------------------------------------------------------------- config ----
@@ -35,50 +54,108 @@ TUNES_RESPECT_OTHER_AUDIO=1
 TUNES_YIELD_TO_OTHER_AUDIO=1  # stop at once (no fade) if another process starts audio
 TUNES_YIELD_SUSTAIN=1    # seconds the other audio must last before we yield to it
 TUNES_IGNORE_PROCESSES="systemsoundserverd"  # never yield to these, whatever they play
-TUNES_TRACK=""           # empty = first file in audio/
+TUNES_EXTS="m4a mp3 opus webm wav flac"      # what counts as a track
+TUNES_SESSION_TTL=1800   # forget a session that has not checked in for this long
 # shellcheck source=/dev/null
 [ -f "$CONF" ] && . "$CONF"
 
-mkdir -p "$STATE" "$ACTIVE" "$AUDIO_DIR"
+mkdir -p "$STATE" "$ACTIVE" "$AUDIO_DIR" "$DISABLED"
 
 PIDFILE="$STATE/player.pid"
+PLAYINGFILE="$STATE/player.track"
 LOG="$STATE/agent-tunes.log"
 IPC="$STATE/mpv.sock"
 
 # The external commands are overridable so the test suite can substitute silent
-# stubs. Nothing but the tests should ever set these.
+# stubs. Nothing but the tests should ever set these, nor TUNES_PICK_INDEX,
+# which replaces the random track choice with a fixed one.
 WATCHER="${TUNES_WATCHER:-$ROOT/libexec/audio-watch}"
 FADER="${TUNES_FADER:-$ROOT/libexec/mpv-fade}"
 PLAYER="${TUNES_PLAYER:-mpv}"
-FFPROBE="${TUNES_FFPROBE:-ffprobe}"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || :; }
 
 # ---------------------------------------------------------------- helpers ---
 enabled() { [ -f "$STATE/enabled" ]; }
 
-track() {
-  if [ -n "$TUNES_TRACK" ]; then
-    case "$TUNES_TRACK" in /*) printf '%s' "$TUNES_TRACK" ;; *) printf '%s' "$AUDIO_DIR/$TUNES_TRACK" ;; esac
-    return
-  fi
-  find "$AUDIO_DIR" -maxdepth 1 -type f \
-    \( -name '*.m4a' -o -name '*.mp3' -o -name '*.opus' -o -name '*.webm' -o -name '*.wav' -o -name '*.flac' \) \
-    | sort | head -1
+# stat's mtime flag differs between BSD and GNU, and getting it wrong silently
+# returns nothing, which would collapse every track onto one cache entry.
+mtime() { stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || echo 0; }
+
+ext_ok() {
+  local e; e="$(printf '%s' "${1##*.}" | tr 'A-Z' 'a-z')"
+  case " $TUNES_EXTS " in *" $e "*) return 0 ;; *) return 1 ;; esac
 }
 
-duration() {  # seconds, integer, cached per track mtime
-  local t="$1" cache stamp
-  stamp="$(stat -f '%m' "$t" 2>/dev/null || echo 0)"
-  cache="$STATE/duration.$stamp"
+tracks_all() {
+  find "$AUDIO_DIR" -maxdepth 1 -type f 2>/dev/null \
+    | grep -Ei "\.($(printf '%s' "$TUNES_EXTS" | tr ' ' '|'))$" | sort
+}
+
+track_enabled() { [ ! -f "$DISABLED/$(basename "$1")" ]; }
+
+tracks_enabled() {
+  local t
+  while IFS= read -r t; do
+    [ -n "$t" ] && track_enabled "$t" && printf '%s\n' "$t"
+  done <<EOF
+$(tracks_all)
+EOF
+}
+
+# One line at random from stdin. awk rather than shuf, which macOS does not
+# ship, and the same srand() the start offset already uses.
+pick_random() {
+  awk -v pick="${TUNES_PICK_INDEX:--1}" '
+    BEGIN { srand() }
+    { a[NR] = $0 }
+    END { if (NR) print a[(pick >= 0 ? pick % NR : int(rand() * NR)) + 1] }'
+}
+
+track() { tracks_enabled | pick_random; }
+
+# Ask the player itself whether a file is playable, since it is the thing that
+# will have to play it, and read the duration out of the same run. --ao=null
+# means this opens no audio device, so it neither makes a sound nor registers
+# as an audio client that our own guard would then yield to.
+#
+# Prints "DUR=<seconds> AID=<stream|no>", or nothing at all when the player
+# cannot open the file. AID=no is what catches a video with no sound in it:
+# the player opens that quite happily and would play silence.
+probe() {
+  "$PLAYER" --no-config --ao=null --vo=null --frames=1 \
+    --term-playing-msg='DUR=${=duration} AID=${=aid}' "$1" 2>/dev/null \
+    | grep -E '^DUR=' | head -1
+}
+
+playable() {  # true when the file has sound in it
+  local out; out="$(probe "$1")"
+  [ -n "$out" ] || return 1
+  case "$out" in *"AID=no"*) return 1 ;; esac
+  return 0
+}
+
+duration() {  # seconds, integer, cached per track name and mtime
+  local t="$1" name cache d
+  name="$(basename "$t")"
+  cache="$STATE/duration/$name.$(mtime "$t")"
   if [ -s "$cache" ]; then cat "$cache"; return; fi
-  local d
-  d="$("$FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$t" 2>/dev/null)"
-  d="${d%%.*}"
+  mkdir -p "$STATE/duration"
+  rm -f "$STATE/duration/$name".* 2>/dev/null   # this track's stale entries only
+  d="$(probe "$t" | sed -n 's/^DUR=\([0-9]*\).*/\1/p')"
   [ -z "$d" ] && d=0
-  rm -f "$STATE"/duration.* 2>/dev/null
-  printf '%s' "$d" >"$cache"
+  # Only a real answer is worth keeping. Caching a zero from a probe that was
+  # interrupted would pin the track at 0:00 and start it from the top forever,
+  # since the cache key only changes when the file itself does.
+  [ "$d" -gt 0 ] && printf '%s' "$d" >"$cache"
   printf '%s' "$d"
+}
+
+fmt_time() {
+  awk -v s="${1:-0}" 'BEGIN {
+    s = int(s); h = int(s / 3600); m = int((s % 3600) / 60); r = s % 60
+    if (h) printf "%d:%02d:%02d", h, m, r; else printf "%d:%02d", m, r
+  }'
 }
 
 player_pid() { [ -s "$PIDFILE" ] && cat "$PIDFILE"; }
@@ -121,6 +198,17 @@ other_audio_playing() {
 
 active_count() { find "$ACTIVE" -type f 2>/dev/null | wc -l | tr -d ' '; }
 
+# A session that stops checking in has gone. A harness killed outright never
+# fires its stop hook, and its registration used to pin the count above zero for
+# ever, so the music never stopped. Every start refreshes the key, and a start
+# runs before each tool call, so a session that is genuinely working stays
+# registered however long it takes.
+reap_sessions() {
+  local mins=$((TUNES_SESSION_TTL / 60))
+  [ "$mins" -ge 1 ] || mins=1
+  find "$ACTIVE" -type f -mmin "+$mins" -delete 2>/dev/null || :
+}
+
 # Session key: Claude Code hooks deliver JSON on stdin, the Pi extension passes --key.
 resolve_key() {
   local explicit="${1:-}"
@@ -139,7 +227,7 @@ resolve_key() {
 kill_player() {
   local mode="${1:-fade}" p faded=0
   p="$(player_pid)"
-  if [ -z "${p:-}" ] || ! kill -0 "$p" 2>/dev/null; then rm -f "$PIDFILE" "$IPC"; return; fi
+  if [ -z "${p:-}" ] || ! kill -0 "$p" 2>/dev/null; then rm -f "$PIDFILE" "$PLAYINGFILE" "$IPC"; return; fi
 
   if [ "$mode" = "fade" ] && [ -S "$IPC" ] && [ -x "$FADER" ]; then
     # mpv has no fade-on-quit, so ramp its volume down over the IPC socket and
@@ -151,13 +239,14 @@ kill_player() {
 
   if kill -0 "$p" 2>/dev/null; then kill "$p" 2>/dev/null; fi
   log "stopped pid=$p mode=$mode faded=$faded"
-  rm -f "$PIDFILE" "$IPC"
+  rm -f "$PIDFILE" "$PLAYINGFILE" "$IPC"
 }
 
 # ---------------------------------------------------------------- commands --
 cmd_start() {
   local key="$1"
   enabled || exit 0
+  reap_sessions
   : >"$ACTIVE/$key"
 
   player_alive && exit 0
@@ -177,53 +266,85 @@ cmd_launch() {  # internal: sleep, re-check, then play
   sleep "$TUNES_START_DELAY"
 
   enabled || return 0
+  reap_sessions
   [ "$(active_count)" -gt 0 ] || return 0
   player_alive && return 0
 
   if other_audio_playing; then log "skip: other audio playing"; return 0; fi
 
+  if ! command -v "$PLAYER" >/dev/null; then
+    log "skip: $PLAYER is not installed"; return 0
+  fi
+
   local t; t="$(track)"
-  if [ -z "$t" ] || [ ! -f "$t" ]; then log "skip: no track in $AUDIO_DIR"; return 0; fi
+  if [ -z "$t" ] || [ ! -f "$t" ]; then
+    if [ -n "$(tracks_all)" ]; then log "skip: every track is disabled"
+    else log "skip: no track in $AUDIO_DIR"; fi
+    return 0
+  fi
 
   # No second lock is needed here: pending.lock is held from spawn until this
   # function exits, so only one launcher is ever in flight.
-  local dur max off
+  #
+  # The tail is clamped to half the track rather than dropped when it does not
+  # fit. Subtracting a flat 300s from a four minute track goes negative, and
+  # the old fallback then allowed any position at all, so the guarantee used to
+  # vanish on exactly the short tracks that needed it most.
+  local dur tail max off
   dur="$(duration "$t")"
-  max=$(( dur - TUNES_MIN_TAIL ))
-  [ "$max" -lt 1 ] && max="$dur"
+  tail="$TUNES_MIN_TAIL"
+  [ "$tail" -gt $((dur / 2)) ] && tail=$((dur / 2))
+  max=$(( dur - tail ))
   [ "$max" -lt 1 ] && max=1
   off="$(awk -v n="$max" 'BEGIN{srand();print int(rand()*n)}')"
 
   rm -f "$IPC"
-  if command -v "$PLAYER" >/dev/null; then
-    # mpv rather than ffplay: its IPC socket is what makes a fade-out possible,
-    # since volume can be changed while it plays.
-    nohup "$PLAYER" --no-video --no-terminal --really-quiet --no-config \
-      --start="$off" --volume=0 \
-      --input-ipc-server="$IPC" \
-      "$t" >/dev/null 2>&1 &
-    local pid=$!
-    printf '%s' "$pid" >"$PIDFILE"
-    # Ramp up once the socket appears, so the fade-in is the same mechanism as
-    # the fade-out rather than a second, filter-based one.
-    local waited=0
-    while [ ! -S "$IPC" ] && kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
-      sleep 0.1; waited=$((waited + 1))
-    done
-    nohup "$FADER" "$IPC" 0 "$TUNES_VOLUME" "$TUNES_FADE_IN" >/dev/null 2>&1 &
-  else
-    nohup ffplay -nodisp -autoexit -loglevel quiet \
-      -volume "$TUNES_VOLUME" -ss "$off" \
-      -af "afade=t=in:st=0:d=$TUNES_FADE_IN" \
-      "$t" >/dev/null 2>&1 &
-    printf '%s' "$!" >"$PIDFILE"
-  fi
+  # mpv rather than ffplay: its IPC socket is what makes a fade-out possible,
+  # since volume can be changed while it plays. There used to be an ffplay
+  # fallback for machines without mpv. It went when mpv took over reading
+  # durations as well, because without mpv that path could no longer find out
+  # how long a track was, and would have started every one of them at the top.
+  nohup "$PLAYER" --no-video --no-terminal --really-quiet --no-config \
+    --start="$off" --volume=0 \
+    --input-ipc-server="$IPC" \
+    "$t" >/dev/null 2>&1 &
+  local pid=$!
+  printf '%s' "$pid" >"$PIDFILE"
+  # Ramp up once the socket appears, so the fade-in is the same mechanism as
+  # the fade-out rather than a second, filter-based one.
+  local waited=0
+  while [ ! -S "$IPC" ] && kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  nohup "$FADER" "$IPC" 0 "$TUNES_VOLUME" "$TUNES_FADE_IN" >/dev/null 2>&1 &
+  basename "$t" >"$PLAYINGFILE"
   log "playing pid=$(player_pid) offset=${off}s/${dur}s track=$(basename "$t")"
+
+  nohup "$0" _watchdog "$(player_pid)" >>"$LOG" 2>&1 &
 
   # Guard: stop the instant anything else starts playing.
   if [ "$TUNES_YIELD_TO_OTHER_AUDIO" = "1" ]; then
     nohup "$0" _guard "$(player_pid)" >>"$LOG" 2>&1 &
   fi
+}
+
+# Stops the player when the last session has gone without saying so. The reaper
+# alone is not enough: it only runs when some agent-tunes command runs, and the
+# situation it exists for is precisely the one where nothing ever runs again.
+cmd_watchdog() {
+  local pid="$1"
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep "${TUNES_WATCHDOG_INTERVAL:-30}"
+    [ "$(player_pid || true)" = "$pid" ] || return 0   # a newer player owns the slot
+    reap_sessions
+    # A live player with nothing registered is always wrong: cmd_stop already
+    # stops on the way out when the count reaches zero.
+    if [ "$(active_count)" -eq 0 ]; then
+      log "no sessions left, stopping"
+      kill_player
+      return 0
+    fi
+  done
 }
 
 # Blocks in an event listener until another process starts audio, then stops us
@@ -240,6 +361,7 @@ cmd_guard() {
 
 cmd_stop() {
   local key="$1"
+  reap_sessions
   # Deregister, then stop only if this was the last agent still working.
   rm -f "$ACTIVE/$key"
   [ "$(active_count)" -gt 0 ] && exit 0
@@ -257,19 +379,26 @@ cmd_off()    { rm -f "$STATE/enabled"; cmd_stop_all; echo "agent-tunes: off"; }
 cmd_toggle() { if enabled; then cmd_off; else cmd_on; fi; }
 
 cmd_status() {
-  local t dur p
-  t="$(track)"; p="$(player_pid || true)"
+  reap_sessions
+  local p n on
+  p="$(player_pid || true)"
+  n="$(tracks_all | grep -c . || true)"
+  on="$(tracks_enabled | grep -c . || true)"
   echo "agent-tunes"
   echo "  state      : $(enabled && echo on || echo off)"
   echo "  code       : $ROOT"
   echo "  data       : $DATA"
-  if [ -n "$t" ] && [ -f "$t" ]; then
-    dur="$(duration "$t")"
-    echo "  track      : $(basename "$t") (${dur}s)"
+  echo "  audio      : $AUDIO_DIR"
+  if [ "$n" -eq 0 ]; then
+    echo "  tracks     : none found"
   else
-    echo "  track      : none found in $AUDIO_DIR"
+    echo "  tracks     : $n, $on enabled"
   fi
-  if player_alive; then echo "  playing    : yes (pid $p)"; else echo "  playing    : no"; fi
+  if player_alive; then
+    echo "  playing    : yes (pid $p, $(cat "$PLAYINGFILE" 2>/dev/null || echo unknown))"
+  else
+    echo "  playing    : no"
+  fi
   echo "  other audio: $(other_audio_playing && echo busy || echo idle)"
   echo "  sessions   : $(active_count) working [$(ls "$ACTIVE" 2>/dev/null | sed 's/^k-//' | tr '\n' ' ')]"
   echo "  volume     : $TUNES_VOLUME/100, start delay ${TUNES_START_DELAY}s"
@@ -285,10 +414,157 @@ cmd_play() {  # manual: ignore the work-tracking, respect the audio-busy rule
   player_alive && echo "playing (pid $(player_pid))"
 }
 
-cmd_download() {
-  [ $# -ge 1 ] || { echo "usage: agent-tunes download <url>" >&2; return 2; }
+# ----------------------------------------------------------------- tracks ---
+# A marker whose track has gone is inert, but it would silently disable a new
+# track that later takes the same name. Sweeping them at the top of every
+# tracks command covers a file deleted by hand as well as one removed here.
+prune_markers() {
+  local m
+  for m in "$DISABLED"/*; do
+    [ -e "$m" ] || continue
+    [ -f "$AUDIO_DIR/$(basename "$m")" ] || rm -f "$m"
+  done
+}
+
+# Exact filename first, then a unique case-insensitive substring, so a track
+# can be named without retyping the whole thing.
+find_track() {
+  local q="$1" lq t base matches="" n=0
+  # A name, never a path. Without this, "tracks remove ../../thing" resolves
+  # outside audio/ and deletes it, while the prompt shows only the basename.
+  case "$q" in */*) echo "that is a path, not a track name: $q" >&2; return 1 ;; esac
+  if [ -f "$AUDIO_DIR/$q" ]; then printf '%s' "$AUDIO_DIR/$q"; return 0; fi
+  lq="$(printf '%s' "$q" | tr 'A-Z' 'a-z')"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    base="$(basename "$t" | tr 'A-Z' 'a-z')"
+    case "$base" in *"$lq"*) matches="$matches$t
+"; n=$((n + 1)) ;; esac
+  done <<EOF
+$(tracks_all)
+EOF
+  case "$n" in
+    0) echo "no track matching: $q" >&2; return 1 ;;
+    1) printf '%s' "${matches%
+}" ;;
+    *) echo "several tracks match '$q':" >&2
+       printf '%s' "$matches" | while IFS= read -r t; do
+         [ -n "$t" ] && echo "  $(basename "$t")" >&2
+       done
+       return 1 ;;
+  esac
+}
+
+tracks_download() {
   command -v yt-dlp >/dev/null || { echo "yt-dlp not installed (brew install yt-dlp)" >&2; return 1; }
-  ( cd "$AUDIO_DIR" && yt-dlp -x --audio-format m4a --no-playlist -o "%(title)s.%(ext)s" "$1" )
+  ( cd "$AUDIO_DIR" && yt-dlp -x --audio-format m4a --no-playlist -o "%(title)s.%(ext)s" "$@" )
+}
+
+cmd_tracks_add() {
+  [ $# -ge 1 ] || { echo "usage: agent-tunes tracks add <path|url>" >&2; return 2; }
+  case "$1" in http://*|https://*) tracks_download "$@"; return $? ;; esac
+
+  local src="$1" name dest
+  [ -f "$src" ] || { echo "no such file: $src" >&2; return 1; }
+  name="$(basename "$src")"
+  ext_ok "$name" || { echo "not a track: $name (needs one of: $TUNES_EXTS)" >&2; return 1; }
+  dest="$AUDIO_DIR/$name"
+  [ -e "$dest" ] && { echo "already have a track called $name" >&2; return 1; }
+  # Without the player there is no way to tell a good file from a bad one, and
+  # "cannot play that" would blame the file for a missing dependency.
+  command -v "$PLAYER" >/dev/null \
+    || { echo "$PLAYER is not installed, so nothing can be checked or played" >&2; return 1; }
+  playable "$src" || { echo "cannot play that, or it has no sound in it: $src" >&2; return 1; }
+
+  cp "$src" "$dest" || return 1
+  rm -f "$DISABLED/$name"
+  echo "added $name ($(fmt_time "$(duration "$dest")"))"
+}
+
+cmd_tracks_list() {
+  local t name n=0 on=0
+  echo "$AUDIO_DIR"
+  echo
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    n=$((n + 1)); name="$(basename "$t")"
+    if track_enabled "$t"; then
+      on=$((on + 1))
+      printf '  %-44s %9s\n' "$name" "$(fmt_time "$(duration "$t")")"
+    else
+      printf '  %-44s %9s   disabled\n' "$name" "$(fmt_time "$(duration "$t")")"
+    fi
+  done <<EOF
+$(tracks_all)
+EOF
+  echo
+  if [ "$n" -eq 0 ]; then
+    echo "  no tracks yet. add one with: agent-tunes tracks add <path|url>"
+  else
+    echo "  $n track$([ "$n" = 1 ] || echo s), $on enabled"
+  fi
+}
+
+cmd_tracks_remove() {
+  local q="${1:-}" yes=0 t name ans
+  [ -n "$q" ] || { echo "usage: agent-tunes tracks remove <name> [--yes]" >&2; return 2; }
+  case "${2:-}" in -y|--yes) yes=1 ;; esac
+  t="$(find_track "$q")" || return 1
+  name="$(basename "$t")"
+
+  # Deleting somebody's music is not undoable, and it may be their only copy.
+  if [ "$yes" != "1" ]; then
+    [ -t 0 ] || { echo "refusing to remove $name without --yes" >&2; return 1; }
+    printf 'Remove %s? [y/N] ' "$name"
+    read -r ans
+    case "$ans" in y|Y|yes|Yes) : ;; *) echo "left alone"; return 0 ;; esac
+  fi
+
+  rm -f "$t" "$DISABLED/$name"
+  rm -f "$STATE/duration/$name".* 2>/dev/null
+  echo "removed $name"
+  [ -n "$(tracks_enabled)" ] || echo "nothing playable left, so the music will stay off."
+}
+
+cmd_tracks_enable() {
+  local q="${1:-}" t
+  [ -n "$q" ] || { echo "usage: agent-tunes tracks enable <name|--all>" >&2; return 2; }
+  if [ "$q" = "--all" ]; then rm -f "$DISABLED"/* 2>/dev/null; echo "every track enabled"; return 0; fi
+  t="$(find_track "$q")" || return 1
+  rm -f "$DISABLED/$(basename "$t")"
+  echo "enabled $(basename "$t")"
+}
+
+cmd_tracks_disable() {
+  local q="${1:-}" t
+  [ -n "$q" ] || { echo "usage: agent-tunes tracks disable <name|--all>" >&2; return 2; }
+  if [ "$q" = "--all" ]; then
+    while IFS= read -r t; do
+      [ -n "$t" ] && : >"$DISABLED/$(basename "$t")"
+    done <<EOF
+$(tracks_all)
+EOF
+    echo "every track disabled, so nothing will play until you enable one"
+    return 0
+  fi
+  t="$(find_track "$q")" || return 1
+  : >"$DISABLED/$(basename "$t")"
+  echo "disabled $(basename "$t")"
+  [ -n "$(tracks_enabled)" ] || echo "that was the last enabled track, so nothing will play."
+}
+
+cmd_tracks() {
+  prune_markers
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list)        cmd_tracks_list ;;
+    add)         cmd_tracks_add "$@" ;;
+    remove|rm)   cmd_tracks_remove "$@" ;;
+    enable)      cmd_tracks_enable "$@" ;;
+    disable)     cmd_tracks_disable "$@" ;;
+    dir)         printf '%s\n' "$AUDIO_DIR" ;;
+    *)           echo "usage: agent-tunes tracks [list|add|remove|enable|disable|dir]" >&2; return 2 ;;
+  esac
 }
 
 cmd_build() {  # recompile the CoreAudio watcher after editing src/
@@ -297,20 +573,34 @@ cmd_build() {  # recompile the CoreAudio watcher after editing src/
   swiftc -O -o "$WATCHER" "$ROOT/src/audio-watch.swift" && echo "built $WATCHER"
 }
 
+# The checks that are more than a single command, so that cmd_doctor can pass
+# every check as a command rather than as a string to be re-parsed.
+# 3 means the CoreAudio API is unavailable. Anything else counts as working,
+# so the binary has to exist first: a missing one exits 127, which is also not
+# 3, and the check used to report ok next to a failing "audio-watch built".
+watcher_works() { [ -x "$WATCHER" ] || return 1
+                  "$WATCHER" --once >/dev/null 2>&1; [ $? -ne 3 ]; }
+extension_linked()  { ls "$HOME/.pi/agent/extensions/agent-tunes.ts" \
+                         "$HOME/.omp/agent/extensions/agent-tunes.ts" 2>/dev/null | grep -q .; }
+plugin_registered() { [ "$(claude plugin list 2>/dev/null | grep -c agent-tunes)" -gt 0 ]; }
+
 cmd_doctor() {
   local ok=0
-  chk() { if eval "$2" >/dev/null 2>&1; then echo "  ok    $1"; else echo "  FAIL  $1"; ok=1; fi; }
+  # Each check runs as a command, never as a re-parsed string. It used to be a
+  # string, which meant a track's own filename was parsed as shell: a file
+  # called "mix $(...).m4a" ran whatever it held the moment anyone ran doctor.
+  chk() { local label="$1"; shift
+          if "$@" >/dev/null 2>&1; then echo "  ok    $label"; else echo "  FAIL  $label"; ok=1; fi; }
   echo "agent-tunes doctor"
-  chk "player installed"   "command -v \"$PLAYER\""
-  chk "ffprobe installed"  "command -v \"$FFPROBE\""
-  chk "yt-dlp installed"   "command -v yt-dlp"
-  chk "audio-watch built"  "[ -x \"$WATCHER\" ]"
-  chk "audio-watch works"  "\"$WATCHER\" --once >/dev/null 2>&1; [ \$? -ne 3 ]"
-  chk "mpv-fade present"   "[ -x \"$FADER\" ]"
-  chk "track present"      "[ -f \"$(track)\" ]"
-  chk "extension linked"   "ls $HOME/.pi/agent/extensions/agent-tunes.ts $HOME/.omp/agent/extensions/agent-tunes.ts 2>/dev/null | grep -q ."
-  chk "claude plugin registered" "[ \"\$(claude plugin list 2>/dev/null | grep -c agent-tunes)\" -gt 0 ]"
-  chk "agent-tunes on PATH" "command -v agent-tunes"
+  chk "player installed"   command -v "$PLAYER"
+  chk "yt-dlp installed"   command -v yt-dlp
+  chk "audio-watch built"  test -x "$WATCHER"
+  chk "audio-watch works"  watcher_works
+  chk "mpv-fade present"   test -x "$FADER"
+  chk "a track is enabled" test -n "$(tracks_enabled)"
+  chk "extension linked"   extension_linked
+  chk "claude plugin registered" plugin_registered
+  chk "agent-tunes on PATH" command -v agent-tunes
   return $ok
 }
 
@@ -321,10 +611,16 @@ agent-tunes: background music while a coding agent works
   agent-tunes on|off|toggle      enable / disable (this is the switch)
   agent-tunes status             what is enabled, what is playing
   agent-tunes play               start now, ignoring the work tracking
-  agent-tunes stop-all           stop now and clear all sessions
+  agent-tunes stop --all         stop now and clear every session
   agent-tunes doctor             check the wiring
   agent-tunes build              recompile the CoreAudio watcher after editing src/
-  agent-tunes download <url>     add another track with yt-dlp
+
+  agent-tunes tracks                       what you have, and what may play
+  agent-tunes tracks add <path|url>        copy a file in, or fetch one with yt-dlp
+  agent-tunes tracks remove <name>         delete it
+  agent-tunes tracks enable  <name|--all>  let it play
+  agent-tunes tracks disable <name|--all>  keep it, but never play it
+  agent-tunes tracks dir                   where the music is kept
 
   agent-tunes start [--key K]    (hooks) mark a session as working
   agent-tunes stop  [--key K]    (hooks) mark a session as finished
@@ -338,16 +634,16 @@ if [ "${1:-}" = "--key" ]; then key_arg="${2:-}"; shift 2 || true; fi
 
 case "$cmd" in
   start)     cmd_start "$(resolve_key "$key_arg")" ;;
-  stop)      cmd_stop  "$(resolve_key "$key_arg")" ;;
+  stop)      if [ "${1:-}" = "--all" ]; then cmd_stop_all; else cmd_stop "$(resolve_key "$key_arg")"; fi ;;
   _launch)   cmd_launch ;;
   _guard)    cmd_guard "${1:-}" ;;
-  stop-all)  cmd_stop_all ;;
+  _watchdog) cmd_watchdog "${1:-}" ;;
   on)        cmd_on ;;
   off)       cmd_off ;;
   toggle)    cmd_toggle ;;
   status)    cmd_status ;;
   play)      cmd_play ;;
-  download)  cmd_download "$@" ;;
+  tracks)    cmd_tracks "$@" ;;
   doctor)    cmd_doctor ;;
   build)     cmd_build ;;
   -h|--help|help) usage ;;

@@ -33,6 +33,37 @@ half-second chime from `systemsoundserverd` was measured still reading as
 starting a call. Hence `TUNES_IGNORE_PROCESSES` rather than a longer
 `TUNES_YIELD_SUSTAIN`.
 
+**How tracks are managed.** `audio/` holds the files and nothing else. Whether a
+track may play is a marker file in `state/disabled/`, named after it. Absence
+means playable, so a file dropped into `audio/` by hand plays without having to
+be registered anywhere, which is the behaviour the README promises. Markers whose
+track has gone are swept at the top of every `tracks` command, so a name reused
+later does not inherit the old one's setting.
+
+Playback picks uniformly from the enabled set. `TUNES_PICK_INDEX` replaces that
+choice with a fixed index into the sorted list, which is how the tests assert on
+it without depending on a dice roll.
+
+**Why mpv answers "can this be played".** mpv is the thing that will have to play
+it, so its own answer is the one that counts, and asking it costs nothing extra:
+one run with `--frames=1` reports both the duration and whether there is an audio
+stream at all. That second part matters, because mpv opens a video with no
+soundtrack quite happily and would then play silence. `--ao=null` means the probe
+opens no audio device, so it makes no sound and does not register as an audio
+client that our own guard would turn round and yield to.
+
+It replaced ffprobe, which used to answer only the duration half and made ffmpeg
+a dependency of playback rather than only of downloading. Measured against a
+three hour file the probe takes 0.44s to ffprobe's 0.06s, which is paid once per
+track and cached in `state/duration/`.
+
+**Why mpv is required rather than preferred.** There was an ffplay fallback for
+machines without mpv. It went when mpv took over reading durations as well: that
+path could no longer find out how long a track was, so it would have started
+every track at the top, and `tracks add` would have rejected every file. A
+missing player is now reported by name, in the log and by `tracks add`, instead
+of being half worked around.
+
 **Why mpv and not ffplay.** ffplay cannot change its volume once it has started,
 so it cannot fade out of a stop it did not see coming. mpv exposes a JSON IPC
 socket, so `libexec/mpv-fade` ramps the volume down and quits at the bottom of
@@ -50,7 +81,7 @@ Swift toolchain.
 ## Tests
 
 ```bash
-tests/unit.sh            # silent, stubs, ~30s
+tests/unit.sh            # silent, stubs, ~60s
 tests/integration.sh     # silent, real mpv and real fade
 tests/docker.sh          # both of the above, on Linux
 tests/audible.sh --yes   # plays out loud, macOS only
@@ -60,7 +91,7 @@ Three tiers, and only the last one makes a sound.
 
 `tests/unit.sh` replaces every external command with a stub from `tests/stubs`,
 so it covers the switch, the start delay, multi-agent counting, yielding, random
-positions and cleanup without touching audio at all. It runs against a throwaway
+positions, track management and cleanup without touching audio at all. It runs against a throwaway
 data directory, so a real agent session on the same machine cannot skew the
 counts. That matters more than it sounds: getting out of the way of other audio
 is the whole point, so a suite that listens to real speakers fails whenever
@@ -76,7 +107,18 @@ hidden dependency on macOS.
 
 `tests/audible.sh` holds only what cannot be faked: the CoreAudio checker
 against real audio clients, and yielding to a real second player. It refuses to
-run without `--yes`, and puts the on/off setting back afterwards.
+run without `--yes`.
+
+It looks after itself in three ways, all of which were learned the hard way. It
+generates its own tone in its own data directory rather than using your music.
+It switches off whatever is driving `~/.agent-tunes` for the duration, because a
+live agent session's hooks start and stop playback on their own schedule and may
+be running a different released version against the same state. And it refuses
+outright when something else already has the speakers, naming the process:
+every check here either asserts the machine is idle or needs playback to start,
+which agent-tunes rightly declines while somebody else is playing, so a busy
+machine produces a page of failures that look like a broken build. Everything it
+changes is put back on the way out, including after that refusal.
 
 Most of it can be silenced with a virtual audio device, which is real output as
 far as CoreAudio is concerned but inaudible:
@@ -91,9 +133,40 @@ to the default device, so the notification case stays audible either way.
 
 ## The command seams
 
-`bin/agent-tunes` reads `TUNES_PLAYER`, `TUNES_FADER`, `TUNES_WATCHER` and
-`TUNES_FFPROBE`, defaulting to the real commands. They exist so the tests can
-substitute stubs. Nothing but the tests should set them.
+`bin/agent-tunes` reads `TUNES_PLAYER`, `TUNES_FADER` and `TUNES_WATCHER`,
+defaulting to the real commands, so the tests can substitute stubs.
+`TUNES_PICK_INDEX` is a seam of a different kind: it fixes the random track
+choice rather than replacing a command. Nothing but the tests should set any of
+them.
+
+**Why ROOT walks the symlink chain.** Setup puts `~/.local/bin/agent-tunes` on
+PATH as a link into the checkout. Taking `dirname` of the link gives `~/.local`,
+which has no `libexec/`, so `audio-watch` and `mpv-fade` were both missing on
+every PATH invocation. Neither is fatal on its own, which is why it went
+unnoticed: the code simply skips the fade and gives up on yielding when they are
+not executable. `readlink` is used without `-f`, because BSD only grew that flag
+recently.
+
+**Why registrations expire.** `state/active/` is the multi-agent count, and a
+harness killed outright never fires its stop hook. Its file used to pin the
+count above zero for ever. Two things now clear it: `reap_sessions` drops
+anything older than `TUNES_SESSION_TTL`, and each player carries a watchdog that
+stops it once nothing is registered. The watchdog is not redundant, because the
+reaper only runs when some agent-tunes command runs, and the case it exists for
+is the one where nothing ever runs again. `TUNES_WATCHDOG_INTERVAL` shortens its
+poll for the tests.
+
+**Track names are data, never code.** `doctor` runs each check as a command
+rather than building a string and evaluating it, because a check that mentioned
+a track interpolated the filename into shell source: a file called
+`mix $(...).m4a` ran whatever it held the moment anyone ran `doctor`. For the
+same reason `find_track` refuses anything containing a slash, which otherwise
+resolved outside `audio/` and let `tracks remove` delete an unrelated file while
+the prompt showed only its basename. Both have tests.
+
+The mpv stub answers a probe from the filename it is given: one containing
+`noaudio` reports a file with no sound in it, one containing `unplayable` reports
+a file mpv cannot open, and anything else is a fixed hour of audio.
 
 ## Releasing
 

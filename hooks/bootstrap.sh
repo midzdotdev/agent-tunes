@@ -74,7 +74,7 @@ fi
 NOTES=""
 command -v mpv >/dev/null || NOTES="agent-tunes needs mpv to play anything: brew install mpv."
 if [ -z "$(find "$DATA/audio" -maxdepth 1 -type f 2>/dev/null | head -1)" ]; then
-  NOTES="$NOTES agent-tunes has no music yet: run 'agent-tunes download <url>' with any link yt-dlp handles, or drop a file into $DATA/audio."
+  NOTES="$NOTES agent-tunes has no music yet: run 'agent-tunes tracks add <url>' with any link yt-dlp handles, or drop a file into $DATA/audio."
 fi
 
 [ -n "$NOTES" ] && printf 'agent-tunes was installed.%s\n' "$NOTES"

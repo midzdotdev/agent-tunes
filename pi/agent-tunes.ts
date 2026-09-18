@@ -94,12 +94,15 @@ export default function (pi: Api): void {
   });
 
   pi.registerCommand("tunes", {
-    description: "agent-tunes: on | off | toggle | status | play | stop",
+    description: "agent-tunes: on | off | toggle | status | play | stop | tracks",
     handler: async (args, ctx) => {
       const arg = (args || "").trim().split(/\s+/)[0] || "status";
-      const sub = arg === "stop" ? "stop-all" : arg;
-      const out = await run([sub]);
-      ctx.ui.notify(out || `agent-tunes: ${sub}`, "info");
+      // Deliberately read-only where tracks are concerned: adding, removing and
+      // enabling touch the user's own music files, so they stay at a terminal.
+      const out = await run(
+        arg === "stop" ? ["stop", "--all"] : arg === "tracks" ? ["tracks", "list"] : [arg],
+      );
+      ctx.ui.notify(out || `agent-tunes: ${arg}`, "info");
     },
   });
 }

@@ -23,7 +23,6 @@ export TUNES_TEST_DIR="$TMP/probe"
 export TUNES_PLAYER="$STUBS/mpv"
 export TUNES_FADER="$STUBS/mpv-fade"
 export TUNES_WATCHER="$STUBS/audio-watch"
-export TUNES_FFPROBE="$STUBS/ffprobe"
 mkdir -p "$AGENT_TUNES_HOME/audio" "$AGENT_TUNES_HOME/state" "$TUNES_TEST_DIR"
 : >"$AGENT_TUNES_HOME/audio/test-track.m4a"
 
@@ -37,12 +36,11 @@ TUNES_RESPECT_OTHER_AUDIO=1
 TUNES_YIELD_TO_OTHER_AUDIO=1
 TUNES_YIELD_SUSTAIN=0.2
 TUNES_IGNORE_PROCESSES="systemsoundserverd"
-TUNES_TRACK=""
 CONF
 
 D="$AGENT_TUNES_HOME"
 LOG="$D/state/agent-tunes.log"
-cleanup_all() { "$T" stop-all >/dev/null 2>&1; rm -f "$TUNES_TEST_DIR/other-audio"; }
+cleanup_all() { "$T" stop --all >/dev/null 2>&1; rm -f "$TUNES_TEST_DIR/other-audio"; }
 trap 'cleanup_all; rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
@@ -123,6 +121,138 @@ mv "$D/audio/test-track.m4a" "$TMP/held.m4a"
 chk "says so rather than failing" "$(grep -c 'skip: no track' "$LOG")" "1"
 "$T" stop --key A >/dev/null
 mv "$TMP/held.m4a" "$D/audio/test-track.m4a"
+
+echo "== managing tracks =="
+: >"$TMP/spare.m4a"; : >"$TMP/second.m4a"
+: >"$TMP/noaudio.m4a"; : >"$TMP/unplayable.m4a"; : >"$TMP/notes.txt"
+chk "adds a playable file"        "$("$T" tracks add "$TMP/spare.m4a" >/dev/null 2>&1; echo $?)" "0"
+chk "and it is there"             "$([ -f "$D/audio/spare.m4a" ] && echo yes || echo no)" "yes"
+chk "refuses a file with no sound" "$("$T" tracks add "$TMP/noaudio.m4a" >/dev/null 2>&1; echo $?)" "1"
+chk "refuses one it cannot open"  "$("$T" tracks add "$TMP/unplayable.m4a" >/dev/null 2>&1; echo $?)" "1"
+chk "refuses a non-audio suffix"  "$("$T" tracks add "$TMP/notes.txt" >/dev/null 2>&1; echo $?)" "1"
+chk "refuses to overwrite"        "$("$T" tracks add "$TMP/spare.m4a" >/dev/null 2>&1; echo $?)" "1"
+chk "lists what is there"         "$("$T" tracks list | grep -c 'spare.m4a')" "1"
+chk "reveals where they live"     "$("$T" tracks dir)" "$D/audio"
+
+"$T" tracks disable spare >/dev/null
+chk "disable marks it"            "$([ -f "$D/state/disabled/spare.m4a" ] && echo yes || echo no)" "yes"
+chk "and list says so"            "$("$T" tracks list | grep -c 'spare.m4a .*disabled')" "1"
+"$T" tracks enable spare >/dev/null
+chk "enable clears the mark"      "$([ -f "$D/state/disabled/spare.m4a" ] && echo yes || echo no)" "no"
+
+"$T" tracks add "$TMP/second.m4a" >/dev/null
+chk "an ambiguous name is refused" "$("$T" tracks disable ".m4a" >/dev/null 2>&1; echo $?)" "1"
+chk "an unknown name is refused"   "$("$T" tracks disable nonesuch >/dev/null 2>&1; echo $?)" "1"
+"$T" tracks disable --all >/dev/null
+chk "--all covers every track" "$(find "$D/state/disabled" -type f | wc -l | tr -d ' ')" "3"
+: >"$LOG"; "$T" start --key A >/dev/null; settle
+chk "so nothing plays"            "$(playing)" "no"
+chk "and it says why"             "$(grep -c 'every track is disabled' "$LOG")" "1"
+"$T" stop --key A >/dev/null
+"$T" tracks enable --all >/dev/null
+chk "and clears them all again"      "$(find "$D/state/disabled" -type f | wc -l | tr -d ' ')" "0"
+
+echo "== a track name is a name, not a path =="
+mkdir -p "$TMP/precious"; echo keep >"$TMP/precious/notes.txt"
+chk "remove refuses to traverse"  "$("$T" tracks remove "../../precious/notes.txt" --yes >/dev/null 2>&1; echo $?)" "1"
+chk "and the file is still there" "$([ -f "$TMP/precious/notes.txt" ] && echo yes || echo no)" "yes"
+chk "disable refuses too"         "$("$T" tracks disable "../../precious/notes.txt" >/dev/null 2>&1; echo $?)" "1"
+
+echo "== a filename is never run as shell =="
+# doctor used to build its checks as strings and eval them, so a track called
+# "mix $(...).m4a" ran whatever it held. The payload has to be relative: a
+# filename cannot contain a slash, which is what makes the cwd the evidence.
+BOOBY='mix $(touch PWNED).m4a'
+mkdir -p "$TMP/cwd"; : >"$D/audio/$BOOBY"
+chk "the booby-trapped track exists" "$([ -f "$D/audio/$BOOBY" ] && echo yes || echo no)" "yes"
+( cd "$TMP/cwd" && "$T" doctor >/dev/null 2>&1 )
+chk "doctor does not execute a track name" \
+    "$([ -e "$TMP/cwd/PWNED" ] && echo executed || echo no)" "no"
+rm -f "$D/audio/$BOOBY"
+
+echo "== without a player it says so =="
+: >"$LOG"
+TUNES_PLAYER=no-such-player-here "$T" start --key NP >/dev/null; settle
+chk "launch names the missing player" "$(grep -c 'is not installed' "$LOG")" "1"
+"$T" stop --key NP >/dev/null
+: >"$TMP/unseen.m4a"
+chk "and add blames the player, not the file" \
+    "$(TUNES_PLAYER=no-such-player-here "$T" tracks add "$TMP/unseen.m4a" 2>&1 | grep -c 'is not installed')" "1"
+
+echo "== a marker cannot outlive its track =="
+: >"$D/state/disabled/ghost.m4a"
+"$T" tracks list >/dev/null
+chk "swept on the next tracks command" "$([ -f "$D/state/disabled/ghost.m4a" ] && echo yes || echo no)" "no"
+
+echo "== removing a track =="
+chk "needs --yes when not a terminal" "$("$T" tracks remove second </dev/null >/dev/null 2>&1; echo $?)" "1"
+"$T" tracks remove second --yes >/dev/null
+chk "removes the file"            "$([ -f "$D/audio/second.m4a" ] && echo yes || echo no)" "no"
+chk "and its marker with it"      "$([ -f "$D/state/disabled/second.m4a" ] && echo yes || echo no)" "no"
+
+echo "== choosing which track to play =="
+# Only the enabled ones are candidates, so this is deterministic.
+"$T" tracks disable spare >/dev/null
+: >"$TUNES_TEST_DIR/player-args"
+for i in 1 2 3; do
+  "$T" start --key "P$i" >/dev/null; settle
+  "$T" stop --key "P$i" >/dev/null; sleep 0.5
+done
+# Counted against the launches that actually happened, not against a fixed
+# number of them: how reliably a start produces a launch is a timing question,
+# and it has its own tests above.
+launches=$(grep -c -- '--start=' "$TUNES_TEST_DIR/player-args")
+chk "it launched at all"           "$([ "${launches:-0}" -ge 1 ] && echo yes || echo no)" "yes"
+chk "never picks a disabled track" "$(grep -c 'spare.m4a' "$TUNES_TEST_DIR/player-args")" "0"
+chk "every launch used an enabled track" \
+    "$(grep -c 'test-track.m4a' "$TUNES_TEST_DIR/player-args")" "$launches"
+"$T" tracks enable spare >/dev/null
+
+# The pick indexes into the whole enabled list rather than always landing on
+# the first, which is what the old single-track behaviour did. Three tracks and
+# an exact expectation per index, so a correct implementation never fails here.
+: >"$TMP/aaa.m4a"; "$T" tracks add "$TMP/aaa.m4a" >/dev/null
+i=0
+for want in aaa.m4a spare.m4a test-track.m4a; do
+  : >"$TUNES_TEST_DIR/player-args"
+  TUNES_PICK_INDEX=$i "$T" play >/dev/null 2>&1; sleep 0.5
+  "$T" stop --all >/dev/null; sleep 0.5
+  chk "index $i picks $want" "$(grep -c -- "$want" "$TUNES_TEST_DIR/player-args")" "1"
+  i=$((i + 1))
+done
+"$T" tracks remove spare --yes >/dev/null
+"$T" tracks remove aaa --yes >/dev/null
+
+echo "== found through a symlink =="
+# ~/.local/bin/agent-tunes is a link into the checkout, and taking dirname of
+# the link used to put ROOT somewhere with no libexec/, quietly costing the
+# fade-out and the yielding.
+ln -sf "$T" "$TMP/linked-agent-tunes"
+chk "resolves to the checkout, not the link" \
+    "$("$TMP/linked-agent-tunes" status | awk '/code/{print $3}')" "$ROOT"
+
+echo "== a session that stops checking in is forgotten =="
+"$T" start --key LIVE >/dev/null; : >"$D/state/active/k-ghost"
+chk "both are registered" "$(count)" "2"
+touch -t "$(date -v-90M +%Y%m%d%H%M 2>/dev/null || date -d '90 minutes ago' +%Y%m%d%H%M)" \
+      "$D/state/active/k-ghost"
+"$T" status >/dev/null
+chk "the stale one is reaped"  "$([ -f "$D/state/active/k-ghost" ] && echo yes || echo no)" "no"
+chk "the live one is untouched" "$([ -f "$D/state/active/k-LIVE" ] && echo yes || echo no)" "yes"
+"$T" stop --key LIVE >/dev/null; settle 1
+
+echo "== and the music does not outlive it =="
+# Nothing would ever run a command again in the case this covers, so the
+# player carries a watchdog of its own.
+: >"$LOG"
+TUNES_WATCHDOG_INTERVAL=1 "$T" start --key DOOMED >/dev/null; settle
+chk "playing while it is registered" "$(playing)" "yes"
+touch -t "$(date -v-90M +%Y%m%d%H%M 2>/dev/null || date -d '90 minutes ago' +%Y%m%d%H%M)" \
+      "$D/state/active/k-DOOMED"
+for i in 1 2 3 4 5 6 7 8; do [ "$(playing)" = "no" ] && break; sleep 1; done
+chk "stopped once nothing was left"  "$(playing)" "no"
+chk "and said why"                   "$(grep -c 'no sessions left' "$LOG")" "1"
+"$T" stop --all >/dev/null
 
 echo "== the Pi extension =="
 # Silent: loading happens before any model call, so this needs no credentials.

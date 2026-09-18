@@ -8,7 +8,13 @@ Run `agent-tunes` with the argument the user asked for:
 - no argument, or "status" → `status`
 - "on" / "off" / "toggle" → that subcommand
 - "play" → `play`
-- "stop" → `stop-all`
+- "stop" → `stop --all`
+- "tracks" → `tracks list`
+
+Never run `tracks add`, `tracks remove`, `tracks enable` or `tracks disable`.
+Those change or delete the user's own music files, so they belong at their
+terminal rather than here. If that is what they asked for, tell them the command
+to run instead of running it.
 
 Argument given: `$ARGUMENTS`
 

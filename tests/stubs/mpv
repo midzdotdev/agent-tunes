@@ -4,6 +4,23 @@
 # checks behave the same. Makes no sound.
 set -u
 : "${TUNES_TEST_DIR:?stub requires TUNES_TEST_DIR}"
+
+# A probe (--frames=1) asks whether a file is playable and how long it is, so
+# it answers and exits rather than blocking. It is deliberately not recorded in
+# player-args, which counts playback launches. The filename drives the answer:
+# "noaudio" reports a file with no sound in it, "unplayable" reports a file the
+# player cannot open at all, and anything else is a fixed hour of audio, which
+# gives the random-offset maths something to work with.
+for a in "$@"; do
+  [ "$a" = "--frames=1" ] || continue
+  f="${*: -1}"
+  case "$f" in
+    *unplayable*) exit 1 ;;
+    *noaudio*)    echo "DUR=3600.000000 AID=no"; exit 0 ;;
+    *)            [ -e "$f" ] || exit 1; echo "DUR=3600.000000 AID=1"; exit 0 ;;
+  esac
+done
+
 printf '%s\n' "$*" >>"$TUNES_TEST_DIR/player-args"
 : >"$TUNES_TEST_DIR/playing"
 sock=""
