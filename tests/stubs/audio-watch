@@ -1,29 +1,48 @@
 #!/usr/bin/env bash
 # Stand-in for the CoreAudio checker. Whether something else is playing is read
-# from a file the test controls, so it needs no audio hardware and no macOS.
+# from files the test controls, so it needs no audio hardware and no macOS.
 #
-#   --once   exit 0 and print BUSY when the flag file exists, else exit 1
-#   default  block until the flag appears (exit 0), or until the guarded
-#            process goes away (exit 4)
+#   other-audio     exists: an app called other-app is playing
+#   ignored-audio   holds a name: a process by that name is playing, which counts
+#                   unless the name is on --ignore-names, as the real one does
+#
+#   --once   exit 0 and print BUSY when something counts, else exit 1
+#   default  block until something counts (exit 0), or until the guarded
+#            process goes away (exit 4), reporting ignored processes on stderr
 set -u
 : "${TUNES_TEST_DIR:?stub requires TUNES_TEST_DIR}"
 FLAG="$TUNES_TEST_DIR/other-audio"
-once=0; guarded=""
+NAMED="$TUNES_TEST_DIR/ignored-audio"
+once=0; guarded=""; names=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --once) once=1 ;;
-    --sustain|--interval|--ignore-names) shift ;;
+    --ignore-names) names="${2:-}"; shift ;;
+    --sustain|--interval) shift ;;
     --*) : ;;
     *) [ -z "$guarded" ] && guarded="$1" ;;
   esac
   shift
 done
-if [ "$once" = "1" ]; then
-  [ -f "$FLAG" ] && { echo "BUSY 4242"; exit 0; }
-  exit 1
-fi
+listed() { case ",$names," in *",$1,"*) return 0 ;; esac; return 1; }
+
+reported=0
+check() {
+  [ -f "$FLAG" ] && { echo "BUSY 4242 other-app"; return 0; }
+  if [ -s "$NAMED" ]; then
+    local n; n="$(cat "$NAMED")"
+    if listed "$n"; then
+      [ "$reported" = 1 ] || { echo "IGNORED 4343 $n" >&2; reported=1; }
+    else
+      echo "BUSY 4343 $n"; return 0
+    fi
+  fi
+  return 1
+}
+
+if [ "$once" = "1" ]; then check; exit $?; fi
 while :; do
-  [ -f "$FLAG" ] && { echo "BUSY 4242"; exit 0; }
+  check && exit 0
   [ -n "$guarded" ] && ! kill -0 "$guarded" 2>/dev/null && exit 4
   sleep 0.1
 done

@@ -105,9 +105,22 @@ It knows the difference between an app that is playing and an app that merely ha
 audio open. Slack, Teams and an idle Safari all sit there holding audio sessions
 without making a sound, and none of them count.
 
-Notification chimes and system alerts do not count either. `TUNES_IGNORE_PROCESSES`
-controls which processes are ignored, and `systemsoundserverd` is on that list by
-default.
+Notification chimes, system alerts and the sound your Mac makes when you plug the
+charger in do not count either. `TUNES_IGNORE_PROCESSES` controls which processes
+are ignored, and `systemsoundserverd` and `PowerChime` are both on that list by
+default. `agent-tunes status` shows the list in force.
+
+Every time it gets out of the way, declines to start, or talks over something on
+that list, it says so by name in `~/.agent-tunes/state/agent-tunes.log`:
+
+```
+yielding to Microsoft Teams ModuleHost (pid 57698)
+skip: other audio playing: Music (pid 1234)
+ignored PowerChime (pid 62342), on TUNES_IGNORE_PROCESSES
+```
+
+So if some sound you would rather it ignored keeps stopping the music, the name
+to add to the list is in the log.
 
 Anything else has to keep playing for `TUNES_YIELD_SUSTAIN` seconds before the
 music gets out of its way, which filters brief noises from short-lived processes.
@@ -135,8 +148,8 @@ one does.
 ## Settings
 
 Settings live in `~/.agent-tunes/config.env`, which setup creates from
-`config.example.env`. It's read fresh on every invocation, so edits apply
-straight away.
+`config.example.env`. It's read fresh every time the music starts, so an edit
+applies from the next start without restarting anything.
 
 Your music, settings and state all live in `~/.agent-tunes`, well away from the
 installed code, so upgrading never touches them.
@@ -151,7 +164,7 @@ installed code, so upgrading never touches them.
 | `TUNES_RESPECT_OTHER_AUDIO` | `1` | Set to `0` to start even when something else is playing |
 | `TUNES_YIELD_TO_OTHER_AUDIO` | `1` | Set to `0` to keep playing when another app starts |
 | `TUNES_YIELD_SUSTAIN` | `1` | Seconds another app must keep playing before yielding |
-| `TUNES_IGNORE_PROCESSES` | `systemsoundserverd` | Executables that never count, whatever they play |
+| `TUNES_IGNORE_PROCESSES` | `systemsoundserverd,PowerChime` | Executables that never count, whatever they play |
 | `TUNES_SESSION_TTL` | `1800` | Forget a session that has not checked in for this many seconds |
 | `TUNES_EXTS` | `m4a mp3 opus webm wav flac` | File suffixes that count as a track |
 

@@ -18,18 +18,24 @@
 //   --sustain   how long the other process must keep playing before it counts,
 //               which filters brief blips from short-lived processes.
 //   --ignore-names
-//               comma-separated executable names that never count, however long
-//               they play. Defaults to systemsoundserverd, the daemon behind
-//               notification chimes and system alerts.
+//               comma-separated executable basenames that never count, however
+//               long they play. Empty unless given: the list belongs to the
+//               caller, so changing it never means rebuilding this.
 //
-// On the ignore list, and why --sustain alone is not enough: IsRunningOutput is
-// sticky. A notification chime lasts about half a second, but systemsoundserverd
-// was measured holding output "running" for up to 10.35 s afterwards on macOS
-// 25.6. No sustain threshold can separate that from a real interruption, so the
-// daemon is excluded by name instead.
+// Why a name list at all, when --sustain exists: IsRunningOutput is sticky. A
+// notification chime lasts about half a second, but systemsoundserverd was
+// measured holding output "running" for up to 10.35 s afterwards on macOS 25.6.
+// No sustain threshold can separate that from a real interruption.
+//
+// Output:
+//   stdout  "BUSY <pid> <name>" when another process counts. The name is the
+//           rest of the line and may contain spaces.
+//   stderr  "IGNORED <pid> <name>" each time a process starts producing output
+//           and is skipped only because of its name, so a caller can log what
+//           it chose to talk over.
 //
 // Exit codes:
-//   0  another process is playing, and its pid is printed as "BUSY <pid>"
+//   0  another process is playing (see stdout)
 //   1  nothing else is playing (--once only)
 //   3  the OS does not support the process-object API
 //   4  the first ignored pid exited, so there is nothing left to guard
@@ -49,7 +55,7 @@ func option(_ name: String, _ fallback: Double) -> Double {
 let interval = max(0.05, option("--interval", 0.5))
 let sustain = max(0, option("--sustain", 1.0))
 
-var ignoredNames: Set<String> = ["systemsoundserverd"]
+var ignoredNames: Set<String> = []
 if let i = args.firstIndex(of: "--ignore-names"), i + 1 < args.count {
     ignoredNames = Set(args[i + 1].split(separator: ",")
         .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
@@ -111,13 +117,32 @@ func isRunningOutput(_ obj: AudioObjectID) -> Bool {
     return value != 0
 }
 
+func label(_ p: pid_t) -> String {
+    let n = execName(p)
+    return n.isEmpty ? "unknown" : n
+}
+
+// Name-ignored pids seen producing output on the previous scan, so each is
+// reported once as it starts rather than on every tick while it plays.
+var ignoredRunning: Set<pid_t> = []
+
 /// The pid of a process we were not told to ignore that is producing output.
 func offender(in objs: [AudioObjectID]) -> pid_t? {
+    var found: pid_t? = nil
+    var skipped: Set<pid_t> = []
+    // Every running object is visited, not just up to the first offender, so
+    // that an ignored process is still noticed when something else is playing.
     for obj in objs where isRunningOutput(obj) {
         let p = pid(of: obj)
-        if p > 0 && !ignored.contains(p) && !ignoredNames.contains(execName(p)) { return p }
+        guard p > 0, !ignored.contains(p) else { continue }
+        if ignoredNames.contains(execName(p)) { skipped.insert(p); continue }
+        if found == nil { found = p }
     }
-    return nil
+    for p in skipped.subtracting(ignoredRunning).sorted() {
+        FileHandle.standardError.write(Data("IGNORED \(p) \(label(p))\n".utf8))
+    }
+    ignoredRunning = skipped
+    return found
 }
 
 var objects = processObjects()
@@ -135,7 +160,7 @@ if bench {
 }
 
 if once {
-    if let p = offender(in: objects) { print("BUSY \(p)"); exit(0) }
+    if let p = offender(in: objects) { print("BUSY \(p) \(label(p))"); exit(0) }
     exit(1)
 }
 
@@ -151,7 +176,7 @@ while true {
     if let p = offender(in: objects) {
         streak = (p == streakPid) ? streak + 1 : 1
         streakPid = p
-        if streak >= needed { print("BUSY \(p)"); exit(0) }
+        if streak >= needed { print("BUSY \(p) \(label(p))"); exit(0) }
     } else {
         streak = 0
         streakPid = 0

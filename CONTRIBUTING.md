@@ -27,11 +27,29 @@ an app starting playback measured 0.07 s.
 On anything older than macOS 14.4 it falls back to power assertions. `coreaudiod`
 holds one per playing audio context, so `pmset` gives a workable yes or no.
 
-**Why notification sounds are ignored by name.** `IsRunningOutput` is sticky. A
+**Why system sounds are ignored by name.** `IsRunningOutput` is sticky. A
 half-second chime from `systemsoundserverd` was measured still reading as
 "playing" 10.35 s later, which no time threshold can separate from someone
 starting a call. Hence `TUNES_IGNORE_PROCESSES` rather than a longer
 `TUNES_YIELD_SUSTAIN`.
+
+Not every system sound comes from `systemsoundserverd`. The charger chime is
+`PowerChime`, a separate app in `/System/Library/CoreServices`, and it stopped
+the music until it was added. Matching is on the executable's basename.
+
+The list lives in `bin/agent-tunes` and nowhere else. `audio-watch` ignores
+nothing unless it is passed `--ignore-names`, so changing the list never means
+rebuilding it. It used to carry a copy of its own, which had to be kept in step
+by hand; a unit check now fails if a default list reappears in the Swift.
+
+**What the log says, and why it names names.** A yield used to be logged as a
+bare pid, which is meaningless by the time anyone reads it: finding out that the
+charger chime was the culprit took a separate listener. `audio-watch` now prints
+`BUSY <pid> <name>`, and on stderr `IGNORED <pid> <name>` each time a
+name-ignored process starts producing output. The guard feeds that stderr into
+the log as it arrives. Ignored processes are reported once per start rather than
+per poll, and only while music is playing, since that is the only time one could
+have stopped it.
 
 **How tracks are managed.** `audio/` holds the files and nothing else. Whether a
 track may play is a marker file in `state/disabled/`, named after it. Absence
@@ -76,7 +94,8 @@ agent-tunes build       # compiles src/audio-watch.swift into libexec/
 ```
 
 Releases ship it prebuilt as a universal binary, so nobody installing it needs a
-Swift toolchain.
+Swift toolchain. Only a change to `src/audio-watch.swift` needs a rebuild; the
+ignore list is passed in at runtime.
 
 ## Tests
 

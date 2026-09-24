@@ -56,7 +56,7 @@ T="$ROOT/bin/agent-tunes"
 REAL_HOME="$HOME/.agent-tunes"
 REAL_WAS=""
 if [ -d "$REAL_HOME" ]; then
-  REAL_WAS="$(AGENT_TUNES_HOME="$REAL_HOME" "$T" status | awk '/state/{print $3}')"
+  REAL_WAS="$(AGENT_TUNES_HOME="$REAL_HOME" "$T" status | awk '$1=="state"{print $3}')"
   if [ "$REAL_WAS" = "on" ]; then
     AGENT_TUNES_HOME="$REAL_HOME" "$T" off >/dev/null 2>&1
     echo "  (switched $REAL_HOME off for the duration, it goes back on afterwards)"
@@ -106,6 +106,7 @@ if [ -n "$AUDIO_DEVICE" ]; then
   echo "  (playback pinned to $AUDIO_DEVICE)"
 fi
 
+TMPBIN="$(mktemp -d)"
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m  %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=$((fail + 1)); }
@@ -114,11 +115,12 @@ cleanup() { "$T" stop --all >/dev/null 2>&1; pkill -f "mpv .*$D/audio" 2>/dev/nu
 
 # These tests drive playback, so it has to be switched on, and whatever the
 # machine had set before must be put back afterwards.
-WAS="$("$T" status | awk '/state/{print $3}')"
+WAS="$("$T" status | awk '$1=="state"{print $3}')"
 restore() {
   cleanup
   [ "$WAS" = "off" ] && "$T" off >/dev/null 2>&1
   [ -n "$OWN_HOME" ] && rm -rf "$OWN_HOME"
+  [ -n "${TMPBIN:-}" ] && rm -rf "$TMPBIN"
   [ "$REAL_WAS" = "on" ] && AGENT_TUNES_HOME="$REAL_HOME" "$T" on >/dev/null 2>&1
   return 0
 }
@@ -142,10 +144,10 @@ trap restore EXIT
 # front and name the culprit, rather than reporting four failures that look like
 # a broken build.
 if [ -x "$ROOT/libexec/audio-watch" ]; then
-  if busy_pid="$("$ROOT/libexec/audio-watch" --once 2>/dev/null)"; then
-    busy_pid="${busy_pid#BUSY }"
+  if busy="$("$ROOT/libexec/audio-watch" --once 2>/dev/null)"; then
+    read -r _ busy_pid busy_name <<<"$busy"
     echo "Something is already playing audio, so these tests cannot run:" >&2
-    ps -o pid,comm -p "$busy_pid" 2>/dev/null | tail -1 | sed 's/^/  /' >&2
+    echo "  ${busy_name:-unknown} (pid $busy_pid)" >&2
     echo "Stop it, or wait for it to finish, and run this again." >&2
     exit 2
   fi
@@ -168,17 +170,19 @@ else
 fi
 
 echo "== notification chimes are not treated as someone taking the speakers =="
-cleanup; wait_idle; "$T" play >/dev/null 2>&1; sleep 5
+cleanup; wait_idle; played="$("$T" play 2>&1)"; sleep 5
 P="$(cat "$D/state/player.pid" 2>/dev/null)"
 if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
   osascript -e 'display notification "test" with title "agent-tunes" sound name "Ping"' >/dev/null 2>&1
   sleep 3
   chk "music survives a notification" "$(kill -0 "$P" 2>/dev/null && echo alive || echo gone)" "alive"
 else
-  bad "music survives a notification (could not start playback)"
+  bad "music survives a notification (could not start playback: ${played:-no output})"
 fi
 
 echo "== the real volume ramp =="
+# Samples the player the notification check above started, so nothing that
+# stops playback may go between the two.
 : >"$LOG"
 if [ -n "${P:-}" ] && kill -0 "$P" 2>/dev/null; then
   vols=""
@@ -211,8 +215,29 @@ else
   bad "the real volume ramp (nothing was playing)"
 fi
 
+echo "== the charger chime is not treated as someone taking the speakers =="
+# PowerChime is what macOS plays when you plug the charger in, and it cost a
+# live session its music before it went on the ignore list. Matching is on the
+# executable's basename, so a renamed player reproduces it exactly. This goes
+# through agent-tunes itself, so it proves the whole chain: the default list,
+# the real watcher, and the note it leaves in the log.
+if [ -x "$WATCH" ]; then
+  cleanup; wait_idle; : >"$LOG"; "$T" play >/dev/null 2>&1; sleep 5
+  P="$(cat "$D/state/player.pid" 2>/dev/null)"
+  cp "$(command -v mpv)" "$TMPBIN/PowerChime" && chmod +x "$TMPBIN/PowerChime"
+  "$TMPBIN/PowerChime" --no-video --no-terminal --really-quiet --no-config \
+    "${MPV_ARGS[@]+"${MPV_ARGS[@]}"}" --volume=5 --length=6 "$TRACK" >/dev/null 2>&1 &
+  chimer=$!; sleep 4
+  chk "music survives the charger chime" "$(kill -0 "$P" 2>/dev/null && echo alive || echo gone)" "alive"
+  chk "and the log says it was ignored"  "$(grep -c 'ignored PowerChime (pid' "$LOG")" "1"
+  kill $chimer 2>/dev/null; wait $chimer 2>/dev/null
+  cleanup; wait_idle
+else
+  echo "  SKIP  checker not built (agent-tunes build)"
+fi
+
 echo "== yields to a real second player =="
-cleanup; wait_idle; "$T" play >/dev/null 2>&1; sleep 5
+cleanup; wait_idle; played="$("$T" play 2>&1)"; sleep 5
 P="$(cat "$D/state/player.pid" 2>/dev/null)"
 if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
   : >"$LOG"
@@ -221,12 +246,21 @@ if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
   for i in $(seq 1 250); do kill -0 "$P" 2>/dev/null || break; sleep 0.02; done
   chk "stopped for it"   "$(kill -0 "$P" 2>/dev/null && echo alive || echo gone)" "gone"
   chk "and did not fade" "$(grep -c 'mode=now faded=0' "$LOG")" "1"
+  chk "and logged who it yielded to" "$(grep -c 'yielding to mpv (pid' "$LOG")" "1"
   kill $other 2>/dev/null
 else
-  bad "yields to a real second player (could not start playback)"
+  bad "yields to a real second player (could not start playback: ${played:-no output})"
 fi
 
 cleanup
+# The data directory is deleted on the way out, and with it the log that says
+# what stopped the music. A failure here is usually something on the machine
+# making a sound at the wrong moment, so show who before it goes.
+if [ "$fail" -gt 0 ] && [ -s "$LOG" ]; then
+  echo
+  echo "  log of this run:"
+  sed 's/^/    /' "$LOG"
+fi
 echo
 echo "=================== $pass passed, $fail failed ==================="
 [ "$fail" -eq 0 ]

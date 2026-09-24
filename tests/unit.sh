@@ -61,7 +61,11 @@ echo "== the switch =="
 chk "disabled: nothing plays"      "$(playing)" "no"
 chk "disabled: nothing registers"  "$(count)"   "0"
 "$T" on >/dev/null
-chk "enabled"                      "$("$T" status | awk '/state/{print $3}')" "on"
+chk "enabled"                      "$("$T" status | awk '$1=="state"{print $3}')" "on"
+# status is scraped by the tests, and a playing track's name appears in it. One
+# called "...flowstate.m4a" once made /state/ match twice, so the audible tier
+# never switched a real install off before measuring.
+chk "status has exactly one state line" "$("$T" status | awk '$1=="state"' | wc -l | tr -d ' ')" "1"
 
 echo "== the start delay =="
 : >"$LOG"; "$T" start --key A >/dev/null
@@ -253,6 +257,48 @@ for i in 1 2 3 4 5 6 7 8; do [ "$(playing)" = "no" ] && break; sleep 1; done
 chk "stopped once nothing was left"  "$(playing)" "no"
 chk "and said why"                   "$(grep -c 'no sessions left' "$LOG")" "1"
 "$T" stop --all >/dev/null
+
+echo "== the ignore list has one home =="
+# It used to be stated in bash and again in Swift, and keeping the Swift copy in
+# step meant a rebuild every time the list changed. The watcher now ignores
+# nothing unless told, so TUNES_IGNORE_PROCESSES is the only list there is.
+sw_names="$(grep -E 'var ignoredNames' "$ROOT/src/audio-watch.swift" | grep -oE '"[^"]+"' | tr -d '"')"
+chk "the watcher holds no list of its own" "${sw_names:-none}" "none"
+sh_names="$(grep -E '^TUNES_IGNORE_PROCESSES=' "$T" | sed 's/.*="//; s/".*//')"
+ex_names="$(grep -E '^TUNES_IGNORE_PROCESSES=' "$ROOT/config.example.env" | sed 's/.*="//; s/".*//')"
+chk "the example matches the default" "$ex_names" "$sh_names"
+chk "the charger chime is on it" "$(printf '%s' "$sh_names" | tr ',' '\n' | grep -cx PowerChime)" "1"
+
+echo "== the log says who =="
+rm -f "$TUNES_TEST_DIR/other-audio" "$TUNES_TEST_DIR/ignored-audio"
+: >"$LOG"; "$T" start --key W >/dev/null; settle
+: >"$TUNES_TEST_DIR/other-audio"; settle 1
+chk "a yield names what it yielded to" "$(grep -c 'yielding to other-app (pid 4242)' "$LOG")" "1"
+"$T" stop --key W >/dev/null; settle 1
+
+: >"$LOG"; "$T" start --key W >/dev/null; settle
+chk "a refused start names what was playing" \
+    "$(grep -c 'skip: other audio playing: other-app (pid 4242)' "$LOG")" "1"
+chk "and so does play" "$("$T" play 2>&1 | grep -c 'other-app (pid 4242) is playing')" "1"
+"$T" stop --all >/dev/null; rm -f "$TUNES_TEST_DIR/other-audio"; settle 1
+
+echo "== the ignore list is read at runtime =="
+# This suite's config ignores only systemsoundserverd, so a process called
+# PowerChime counts, until the config says otherwise. Nothing is rebuilt.
+: >"$LOG"; "$T" start --key W >/dev/null; settle
+echo PowerChime >"$TUNES_TEST_DIR/ignored-audio"; settle 1
+chk "off the list, it takes the speakers" "$(grep -c 'yielding to PowerChime (pid 4343)' "$LOG")" "1"
+"$T" stop --key W >/dev/null; rm -f "$TUNES_TEST_DIR/ignored-audio"; settle 1
+
+sed -i.bak 's/^TUNES_IGNORE_PROCESSES=.*/TUNES_IGNORE_PROCESSES="systemsoundserverd,PowerChime"/' "$D/config.env"
+: >"$LOG"; "$T" start --key W >/dev/null; settle
+echo PowerChime >"$TUNES_TEST_DIR/ignored-audio"; settle 1
+chk "on the list, it is talked over"  "$(playing)" "yes"
+chk "and the log says so, by name" \
+    "$(grep -c 'ignored PowerChime (pid 4343), on TUNES_IGNORE_PROCESSES' "$LOG")" "1"
+chk "once, not on every poll"         "$(grep -c 'ignored PowerChime' "$LOG")" "1"
+"$T" stop --key W >/dev/null; rm -f "$TUNES_TEST_DIR/ignored-audio"; settle 1
+mv "$D/config.env.bak" "$D/config.env"
 
 echo "== the Pi extension =="
 # Silent: loading happens before any model call, so this needs no credentials.

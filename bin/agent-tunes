@@ -53,7 +53,7 @@ TUNES_MIN_TAIL=300       # never start within this many seconds of the end
 TUNES_RESPECT_OTHER_AUDIO=1
 TUNES_YIELD_TO_OTHER_AUDIO=1  # stop at once (no fade) if another process starts audio
 TUNES_YIELD_SUSTAIN=1    # seconds the other audio must last before we yield to it
-TUNES_IGNORE_PROCESSES="systemsoundserverd"  # never yield to these, whatever they play
+TUNES_IGNORE_PROCESSES="systemsoundserverd,PowerChime"  # never yield to these, whatever they play
 TUNES_EXTS="m4a mp3 opus webm wav flac"      # what counts as a track
 TUNES_SESSION_TTL=1800   # forget a session that has not checked in for this long
 # shellcheck source=/dev/null
@@ -175,15 +175,19 @@ player_alive() {
 # PreventUserIdleSystemSleep assertion per playing audio context. Note grep -c,
 # not grep -q: under `set -o pipefail` a short-circuiting grep kills pmset with
 # SIGPIPE and the pipeline reports failure, which would read as "idle".
+# Sets OTHER_AUDIO to "<name> (pid <n>)" when the watcher could say who it was,
+# and leaves it empty when the power-assertion fallback answered instead.
+OTHER_AUDIO=""
 other_audio_playing() {
+  OTHER_AUDIO=""
   [ "$TUNES_RESPECT_OTHER_AUDIO" = "1" ] || return 1
   local ours n
   ours="$(player_pid || true)"
   if [ -x "$WATCHER" ]; then
-    local rc=0
-    "$WATCHER" --once --ignore-names "$TUNES_IGNORE_PROCESSES" ${ours:+"$ours"} >/dev/null 2>&1 || rc=$?
+    local rc=0 out
+    out="$("$WATCHER" --once --ignore-names "$TUNES_IGNORE_PROCESSES" ${ours:+"$ours"} 2>/dev/null)" || rc=$?
     case "$rc" in
-      0) return 0 ;;  # something else is playing
+      0) OTHER_AUDIO="$(describe_busy "$out")"; return 0 ;;  # something else is playing
       1) return 1 ;;  # definitely nothing else
       *) : ;;         # 3 = API unavailable, fall through to power assertions
     esac
@@ -194,6 +198,15 @@ other_audio_playing() {
   else
     [ "${n:-0}" -gt 0 ]
   fi
+}
+
+# "BUSY <pid> <name>" -> "<name> (pid <pid>)". The name is everything after the
+# pid and may contain spaces, as "Microsoft Teams ModuleHost" does. A watcher
+# built before names were reported prints no name at all, hence the fallback.
+describe_busy() {
+  local _tag p name
+  read -r _tag p name <<<"$1"
+  printf '%s (pid %s)' "${name:-unknown}" "${p:-?}"
 }
 
 active_count() { find "$ACTIVE" -type f 2>/dev/null | wc -l | tr -d ' '; }
@@ -270,7 +283,7 @@ cmd_launch() {  # internal: sleep, re-check, then play
   [ "$(active_count)" -gt 0 ] || return 0
   player_alive && return 0
 
-  if other_audio_playing; then log "skip: other audio playing"; return 0; fi
+  if other_audio_playing; then log "skip: other audio playing${OTHER_AUDIO:+: $OTHER_AUDIO}"; return 0; fi
 
   if ! command -v "$PLAYER" >/dev/null; then
     log "skip: $PLAYER is not installed"; return 0
@@ -352,10 +365,18 @@ cmd_watchdog() {
 cmd_guard() {
   local pid="$1" out rc=0
   [ -x "$WATCHER" ] || return 0
-  out="$("$WATCHER" --sustain "$TUNES_YIELD_SUSTAIN" --ignore-names "$TUNES_IGNORE_PROCESSES" "$pid" 2>/dev/null)" || rc=$?
+  # The watcher reports each name-ignored process on stderr as it starts, and
+  # those go in the log as they happen: when a new system sound turns up, the
+  # log shows whether it was talked over or given the speakers, and by name.
+  # The process substitution holds the captured stdout open, so $(...) waits for
+  # the last of them to be written before the yield below is logged.
+  out="$("$WATCHER" --sustain "$TUNES_YIELD_SUSTAIN" --ignore-names "$TUNES_IGNORE_PROCESSES" "$pid" \
+          2> >(while read -r tag p name; do
+                 [ "$tag" = "IGNORED" ] && log "ignored ${name:-unknown} (pid $p), on TUNES_IGNORE_PROCESSES"
+               done))" || rc=$?
   [ "$rc" -eq 0 ] || return 0                       # 4 = player already gone
   [ "$(player_pid || true)" = "$pid" ] || return 0   # a newer player owns the slot
-  log "yielding: $out"
+  log "yielding to $(describe_busy "$out")"
   kill_player now
 }
 
@@ -399,16 +420,18 @@ cmd_status() {
   else
     echo "  playing    : no"
   fi
-  echo "  other audio: $(other_audio_playing && echo busy || echo idle)"
+  if other_audio_playing; then echo "  other audio: busy${OTHER_AUDIO:+, $OTHER_AUDIO}"
+  else echo "  other audio: idle"; fi
   echo "  sessions   : $(active_count) working [$(ls "$ACTIVE" 2>/dev/null | sed 's/^k-//' | tr '\n' ' ')]"
   echo "  volume     : $TUNES_VOLUME/100, start delay ${TUNES_START_DELAY}s"
   echo "  fades      : in ${TUNES_FADE_IN}s, out ${TUNES_FADE_OUT}s"
   echo "  yields     : $([ "$TUNES_YIELD_TO_OTHER_AUDIO" = "1" ] && echo "yes, without fade, after ${TUNES_YIELD_SUSTAIN}s of other audio" || echo no)"
+  echo "  ignores    : ${TUNES_IGNORE_PROCESSES:-nothing}"
 }
 
 cmd_play() {  # manual: ignore the work-tracking, respect the audio-busy rule
   player_alive && { echo "already playing (pid $(player_pid))"; return 0; }
-  if other_audio_playing; then echo "not starting: something else is playing"; return 1; fi
+  if other_audio_playing; then echo "not starting: ${OTHER_AUDIO:-something else} is playing"; return 1; fi
   : >"$ACTIVE/k-manual"
   TUNES_START_DELAY=0 cmd_launch
   player_alive && echo "playing (pid $(player_pid))"
